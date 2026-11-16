@@ -47,6 +47,7 @@ import com.android.launcher3.model.UserLockStateChangedTask
 import com.android.launcher3.model.UserManagerState
 import com.android.launcher3.model.WorkspaceItemSpaceFinder
 import com.android.launcher3.model.WorkspaceAvailability
+import com.android.launcher3.model.ShortcutAvailabilityJournal.Decision
 import com.android.launcher3.model.data.ItemInfo
 import com.android.launcher3.model.data.WorkspaceItemInfo
 import com.android.launcher3.pm.UserCache
@@ -119,10 +120,20 @@ constructor(
         private set
 
     // Runnable to check if the shortcuts permission has changed.
-    private val mDataValidationCheck = Runnable {
-        if (mModelLoaded) {
-            modelDelegate.validateData()
-            revalidateWorkspaceAvailability()
+    @Volatile private var mAvailabilityForeground = false
+    private val mDataValidationCheck = Runnable { runDataValidationCheck() }
+
+    private fun runDataValidationCheck() {
+        if (mModelDestroyed || !isModelLoaded()) return
+        modelDelegate.validateData()
+        revalidateWorkspaceAvailability()
+        if (mAvailabilityForeground && synchronized(mBgDataModel) {
+                mBgDataModel.itemsIdMap.any { it is WorkspaceItemInfo &&
+                    it.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && it.status == 0 &&
+                    (it.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0 }
+            }) {
+            // Registration can lag behind a mounted-volume broadcast; retries never authorize deletion.
+            MODEL_EXECUTOR.handler.postDelayed(mDataValidationCheck, 5_000L)
         }
     }
 
@@ -173,6 +184,7 @@ constructor(
     /** Called when the model is destroyed */
     fun destroy() {
         mModelDestroyed = true
+        mAvailabilityForeground = false
         MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.execute { modelDelegate.destroy() }
     }
@@ -402,8 +414,18 @@ constructor(
      * [UserCache]
      */
     fun validateModelDataOnResume() {
+        mAvailabilityForeground = true
+        requestAvailabilityRevalidation()
+    }
+
+    fun requestAvailabilityRevalidation() {
         MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.post(mDataValidationCheck)
+    }
+
+    fun onLauncherPaused() {
+        mAvailabilityForeground = false
+        MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
     }
 
     /** Recheck on foreground/storage hints without feeding recovered apps into the install queue. */
@@ -415,10 +437,9 @@ constructor(
                 if (item is WorkspaceItemInfo && item.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && item.status == 0 && !item.isArchived) {
                     val decision = workspaceAvailability.evaluate(item)
                     val unavailable = (item.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0
-                    if (decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.NORMAL ||
-                        decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.REMOVE ||
-                        (decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.PRESERVE && !unavailable) ||
-                        (decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.AVAILABLE && unavailable)) {
+                    if (decision == Decision.NORMAL || decision == Decision.REMOVE ||
+                        (decision == Decision.PRESERVE && !unavailable) ||
+                        (decision == Decision.AVAILABLE && unavailable)) {
                         item.targetPackage?.let { packages.add(PackageUserKey(it, item.user)) }
                     }
                 }

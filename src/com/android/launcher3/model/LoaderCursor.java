@@ -207,7 +207,16 @@ public class LoaderCursor extends CursorWrapper {
     }
 
     public ShortcutAvailabilityJournal.Decision getAvailabilityDecision(Intent intent) {
-        return mModel.getWorkspaceAvailability().evaluate(id, serialNumber, intent, user);
+        WorkspaceAvailability availability = mModel.getWorkspaceAvailability();
+        ShortcutAvailabilityJournal.Decision decision = availability.evaluate(id, serialNumber, intent, user);
+        if (decision == ShortcutAvailabilityJournal.Decision.NORMAL && !Utilities.isBootCompleted()
+                && intent.getComponent() != null) {
+            // Preboot uncertainty can begin recovery; completing boot never ends it or proves removal.
+            availability.recordEvent(PackageUpdatedTask.OP_UNAVAILABLE, user,
+                    new String[] {intent.getComponent().getPackageName()});
+            return availability.evaluate(id, serialNumber, intent, user);
+        }
+        return decision;
     }
 
     @VisibleForTesting
@@ -427,7 +436,7 @@ public class LoaderCursor extends CursorWrapper {
                     info.title = componentName.getClassName();
                 }
             } else {
-                info.title = "";
+                info.title = getTitle();
             }
         }
 

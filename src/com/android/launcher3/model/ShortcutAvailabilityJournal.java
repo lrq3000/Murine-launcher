@@ -42,6 +42,7 @@ public final class ShortcutAvailabilityJournal {
         boolean recovering;
         boolean pendingRemoval;
         long generation;
+        long removalGeneration;
         String installationUuid = "";
         String publicVolumeUuid = "";
     }
@@ -49,7 +50,10 @@ public final class ShortcutAvailabilityJournal {
     private final Persistence mPersistence;
     private final Map<PackageKey, PackageState> mPackages = new HashMap<>();
     private final Map<Target, Boolean> mItems = new HashMap<>();
+    private final Map<Target, Long> mCreatedGenerations = new HashMap<>();
     private final Set<Target> mRemoved = new HashSet<>();
+    // A valid older file may predate a failed unavailable-event write. Historical "internal" classification alone cannot authorize deletion after restart.
+    private final Set<Target> mCurrentInternalTargets = new HashSet<>();
     private boolean mHealthy = true;
     private int mBatchDepth;
     private boolean mDirty;
@@ -72,6 +76,7 @@ public final class ShortcutAvailabilityJournal {
             // Never trust a partially decoded removal list or internal classification.
             mPackages.clear();
             mItems.clear();
+            mCreatedGenerations.clear();
             mRemoved.clear();
             mHealthy = false;
         }
@@ -82,7 +87,20 @@ public final class ShortcutAvailabilityJournal {
             String uuid, String volume) {
         if (mHealthy && mRemoved.contains(target)) return Decision.REMOVE;
         PackageState state = state(target.profile, target.packageName);
+        boolean storageChanged = false;
+        if (!exact && Boolean.TRUE.equals(external)) {
+            // Positive external metadata is useful even while PackageManager has not registered the activity yet.
+            storageChanged = state.external != 1;
+            state.external = 1;
+            if (uuid != null && !uuid.equals(state.installationUuid)) {
+                state.installationUuid = uuid;
+                state.publicVolumeUuid = "";
+                storageChanged = true;
+            }
+        }
         if (exact) {
+            if (Boolean.FALSE.equals(external)) mCurrentInternalTargets.add(target);
+            else mCurrentInternalTargets.remove(target);
             boolean changed = !Boolean.FALSE.equals(mItems.put(target, false));
             if (external != null && state.external != (external ? 1 : 0)) {
                 state.external = external ? 1 : 0;
@@ -105,9 +123,9 @@ public final class ShortcutAvailabilityJournal {
             if (changed) persist();
             return Decision.AVAILABLE;
         }
-        if (!mHealthy || !mItems.containsKey(target) || state.external != 0 || state.recovering
+        if (!mHealthy || !mCurrentInternalTargets.contains(target) || !mItems.containsKey(target) || state.external != 0 || state.recovering
                 || Boolean.TRUE.equals(mItems.get(target))) {
-            if (!Boolean.TRUE.equals(mItems.put(target, true))) persist();
+            if (!Boolean.TRUE.equals(mItems.put(target, true)) || storageChanged) persist();
             return Decision.PRESERVE;
         }
         return Decision.NORMAL;
@@ -130,6 +148,9 @@ public final class ShortcutAvailabilityJournal {
             }
         }
         mRemoved.addAll(targets);
+        // Known older layouts also belong to the removed installation; defer their actual database edits until they load.
+        mItems.keySet().stream().filter(target -> target.profile == profile && target.packageName.equals(pkg)
+                && belongsToPendingRemoval(target)).forEach(mRemoved::add);
         PackageState state = state(profile, pkg);
         state.generation++;
         state.recovering = false;
@@ -139,6 +160,7 @@ public final class ShortcutAvailabilityJournal {
     }
 
     public synchronized void added(long profile, String pkg) {
+        mCurrentInternalTargets.removeIf(target -> target.profile == profile && target.packageName.equals(pkg));
         PackageState state = state(profile, pkg);
         state.generation++;
         state.external = -1;
@@ -149,7 +171,9 @@ public final class ShortcutAvailabilityJournal {
     }
 
     public synchronized void packageRemoved(long profile, String pkg) {
-        state(profile, pkg).pendingRemoval = true;
+        PackageState state = state(profile, pkg);
+        state.pendingRemoval = true;
+        state.removalGeneration = ++state.generation;
         persistNow();
     }
 
@@ -167,10 +191,31 @@ public final class ShortcutAvailabilityJournal {
         return mHealthy && mRemoved.contains(target);
     }
 
+    /** Write-ahead insertion fence: interruption after this commit but before favorites insertion is harmless. */
+    public synchronized boolean created(Target target) {
+        PackageState state = state(target.profile, target.packageName);
+        boolean wasRemoved = mRemoved.contains(target);
+        boolean needsFence = state.pendingRemoval || wasRemoved;
+        mCreatedGenerations.put(target, state.generation);
+        mItems.put(target, true);
+        mRemoved.remove(target);
+        boolean durable = persistNow();
+        if (!durable && wasRemoved) mRemoved.add(target);
+        // If old durable removal authority could match this new row, refuse insertion unless its fence is durable too.
+        return durable || !needsFence;
+    }
+
+    public synchronized boolean belongsToPendingRemoval(Target target) {
+        PackageState state = state(target.profile, target.packageName);
+        return mHealthy && state.pendingRemoval
+                && mCreatedGenerations.getOrDefault(target, 0L) < state.removalGeneration;
+    }
+
     /** Retire only after favorites proves a row absent; a crash between the two writes is idempotent. */
     public synchronized void retireAbsent(String database, Set<Target> present) {
         boolean changed = mRemoved.removeIf(target -> target.database.equals(database) && !present.contains(target));
         changed |= mItems.keySet().removeIf(target -> target.database.equals(database) && !present.contains(target));
+        changed |= mCreatedGenerations.keySet().removeIf(target -> target.database.equals(database) && !present.contains(target));
         if (changed) persist();
     }
 
@@ -225,6 +270,7 @@ public final class ShortcutAvailabilityJournal {
                 out.writeBoolean(state.recovering);
                 out.writeBoolean(state.pendingRemoval);
                 out.writeLong(state.generation);
+                out.writeLong(state.removalGeneration);
                 out.writeUTF(state.installationUuid);
                 out.writeUTF(state.publicVolumeUuid);
             }
@@ -232,6 +278,7 @@ public final class ShortcutAvailabilityJournal {
             for (var entry : mItems.entrySet()) {
                 writeTarget(out, entry.getKey());
                 out.writeBoolean(entry.getValue());
+                out.writeLong(mCreatedGenerations.getOrDefault(entry.getKey(), 0L));
             }
             out.writeInt(mRemoved.size());
             for (Target target : mRemoved) writeTarget(out, target);
@@ -259,11 +306,16 @@ public final class ShortcutAvailabilityJournal {
                 state.recovering = in.readBoolean();
                 state.pendingRemoval = in.readBoolean();
                 state.generation = in.readLong();
+                state.removalGeneration = in.readLong();
                 state.installationUuid = in.readUTF();
                 state.publicVolumeUuid = in.readUTF();
                 mPackages.put(key, state);
             }
-            for (int count = readCount(in); count > 0; count--) mItems.put(readTarget(in), in.readBoolean());
+            for (int count = readCount(in); count > 0; count--) {
+                Target target = readTarget(in);
+                mItems.put(target, in.readBoolean());
+                mCreatedGenerations.put(target, in.readLong());
+            }
             for (int count = readCount(in); count > 0; count--) mRemoved.add(readTarget(in));
             if (in.read() != -1) throw new IOException("Trailing journal data");
         }

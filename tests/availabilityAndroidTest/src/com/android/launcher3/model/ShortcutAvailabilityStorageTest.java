@@ -22,7 +22,6 @@ import com.android.launcher3.util.ContentWriter;
 import androidx.test.platform.app.InstrumentationRegistry;
 import org.junit.Test;
 import java.io.File;
-import java.util.List;
 
 /** Real Android persistence checks in the availability androidTest source set; no mocked database or AtomicFile. */
 public class ShortcutAvailabilityStorageTest {
@@ -54,6 +53,10 @@ public class ShortcutAvailabilityStorageTest {
         assertEquals(Integer.valueOf(2), result.getAsInteger(Favorites.CELLX));
         assertEquals(Integer.valueOf(4), result.getAsInteger(Favorites.RANK));
         assertEquals(flags, item.runtimeStatusFlags);
+        item.runtimeStatusFlags &= ~WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
+        item.bitmap = null;
+        item.onAddToDatabase(writer);
+        assertEquals("Custom saved label", writer.getValues(context).getAsString(Favorites.TITLE));
     }
 
     @Test
@@ -80,7 +83,7 @@ public class ShortcutAvailabilityStorageTest {
         var row = new ShortcutAvailabilityJournal.Target("db-A", 42, 7, "pkg", "pkg/.Main");
         assertEquals(ShortcutAvailabilityJournal.Decision.PRESERVE,
                 journal.evaluate(row, false, null, null, null));
-        assertTrue(journal.removed(7, "pkg", List.of(row)));
+        assertTrue(journal.removed(7, "pkg", java.util.Collections.singletonList(row)));
         journal.added(7, "pkg");
         var reopened = new ShortcutAvailabilityJournal(new AtomicAvailabilityPersistence(file));
         assertEquals(ShortcutAvailabilityJournal.Decision.REMOVE,

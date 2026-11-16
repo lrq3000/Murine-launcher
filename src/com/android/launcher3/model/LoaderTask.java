@@ -38,7 +38,6 @@ import static com.android.launcher3.util.PackageManagerHelper.hasShortcutsPermis
 import android.appwidget.AppWidgetProviderInfo;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.LauncherActivityInfo;
 import android.content.pm.LauncherApps;
 import android.content.pm.PackageInstaller;
@@ -50,6 +49,7 @@ import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.LongSparseArray;
 
@@ -462,8 +462,8 @@ public class LoaderTask implements Runnable {
             dbController.tryMigrateDB(restoreEventLogger, mModelDelegate);
         }
         Log.d(TAG, "loadWorkspace: loading default favorites if necessary");
-        dbController.loadDefaultFavoritesIfNecessary();
         mModel.getWorkspaceAvailability().reconcilePendingRemovals();
+        dbController.loadDefaultFavoritesIfNecessary();
         mModel.getWorkspaceAvailability().retireAbsentRows();
 
         synchronized (mBgDataModel) {
@@ -619,13 +619,16 @@ public class LoaderTask implements Runnable {
             folder.getContents().sort(Folder.ITEM_POS_COMPARATOR);
             verifiers.forEach(verifier -> verifier.setFolderInfo(folder));
             int size = folder.getContents().size();
+            boolean hasUnavailableChild = folder.getAppContents().stream().anyMatch(child ->
+                    child.itemType == Favorites.ITEM_TYPE_APPLICATION
+                            && (child.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0);
 
             // Update ranks here to ensure there are no gaps caused by removed folder items.
             // Ranks are the source of truth for folder items, so cellX and cellY can be
             // ignored for now. Database will be updated once user manually modifies folder.
             for (int rank = 0; rank < size; ++rank) {
                 ItemInfo info = folder.getContents().get(rank);
-                info.rank = rank;
+                if (!hasUnavailableChild) info.rank = rank;
 
                 if (info instanceof WorkspaceItemInfo wii
                         && (wii.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) == 0
@@ -644,6 +647,10 @@ public class LoaderTask implements Runnable {
             List<IconRequestInfo<WorkspaceItemInfo>> iconRequestInfos) {
         Trace.beginSection("LoadWorkspaceIconsInBulk");
         try {
+            Map<WorkspaceItemInfo, CharSequence> savedTitles = new HashMap<>();
+            for (IconRequestInfo<WorkspaceItemInfo> request : iconRequestInfos) {
+                savedTitles.put(request.itemInfo, request.itemInfo.title);
+            }
             mIconCache.getTitlesAndIconsInBulk(iconRequestInfos);
             for (IconRequestInfo<WorkspaceItemInfo> iconRequestInfo : iconRequestInfos) {
                 WorkspaceItemInfo wai = iconRequestInfo.itemInfo;
@@ -651,7 +658,9 @@ public class LoaderTask implements Runnable {
                     logASplit("tryLoadWorkspaceIconsInBulk: default icon found for "
                             + wai.getTargetComponent() + ", will attempt to load from iconBlob");
                     iconRequestInfo.loadIconFromDbBlob(mContext);
+                    if (!TextUtils.isEmpty(savedTitles.get(wai))) wai.title = savedTitles.get(wai);
                 }
+                if (TextUtils.isEmpty(wai.title)) wai.title = savedTitles.get(wai);
             }
         } finally {
             Trace.endSection();

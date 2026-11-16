@@ -182,12 +182,22 @@ public class ModelDbController {
                 + mOpenHelper.getWorkspaceIdentity();
     }
 
+    private WorkspaceAvailability mWorkspaceAvailability;
+
+    void setWorkspaceAvailability(WorkspaceAvailability availability) {
+        mWorkspaceAvailability = availability;
+    }
+
     /**
      * Refer {@link SQLiteDatabase#insert(String, String, ContentValues)}
      */
     @WorkerThread
     public int insert(ContentValues initialValues) {
         createDbIfNotExists();
+        if (mWorkspaceAvailability != null && !mWorkspaceAvailability.beforeInsert(initialValues)) {
+            Log.e(TAG, "New shortcut deferred because its uninstall-generation fence could not be persisted");
+            return -1;
+        }
 
         SQLiteDatabase db = mOpenHelper.getWritableDatabase();
         addModifiedTime(initialValues);

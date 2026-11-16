@@ -143,7 +143,8 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
         // Position edits while unavailable must not replace the last good cached title/icon with a failed-query fallback.
         boolean available = itemType != Favorites.ITEM_TYPE_APPLICATION || status != 0 || isArchived()
                 || (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) == 0;
-        if (available || id == NO_ID) writer.put(Favorites.TITLE, title);
+        if ((available || id == NO_ID) && (itemType != Favorites.ITEM_TYPE_APPLICATION
+                || id == NO_ID || !TextUtils.isEmpty(title))) writer.put(Favorites.TITLE, title);
         writer.put(Favorites.INTENT, getIntent())
                 .put(Favorites.OPTIONS, options)
                 .put(Favorites.RESTORED, status);

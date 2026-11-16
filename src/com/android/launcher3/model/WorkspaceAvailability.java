@@ -16,8 +16,10 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.LauncherActivityInfo;
 import android.content.pm.LauncherApps;
+import android.content.pm.PackageManager;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.os.Environment;
 import android.os.storage.StorageManager;
 import android.os.storage.StorageVolume;
 import android.text.TextUtils;
@@ -60,6 +62,7 @@ public final class WorkspaceAvailability {
         mContext = context;
         mDatabase = database;
         mUsers = users;
+        database.setWorkspaceAvailability(this);
     }
 
     private synchronized ShortcutAvailabilityJournal journal() {
@@ -77,6 +80,27 @@ public final class WorkspaceAvailability {
 
     public void endLoad() {
         journal().endBatch();
+    }
+
+    /** Invoked on MODEL_EXECUTOR before inserting a new favorites row, not after a crash-sensitive database commit. */
+    public synchronized boolean beforeInsert(ContentValues values) {
+        Integer type = values.getAsInteger(Favorites.ITEM_TYPE);
+        Long id = values.getAsLong(Favorites._ID);
+        Long profile = values.getAsLong(Favorites.PROFILE_ID);
+        if (type == null || type != Favorites.ITEM_TYPE_APPLICATION || id == null || profile == null) return true;
+        ComponentName component;
+        try {
+            component = Intent.parseUri(values.getAsString(Favorites.INTENT), 0).getComponent();
+        } catch (Exception e) {
+            return true;
+        }
+        if (component == null) return true;
+        try (var cursor = mDatabase.query(new String[] {Favorites._ID}, Favorites._ID + "=?", new String[] {id.toString()}, null)) {
+            // A failed duplicate-ID insertion must not retire a live row's uninstall tombstone.
+            if (cursor.moveToFirst()) return true;
+        }
+        return journal().created(new Target(mDatabase.getWorkspaceIdentity(), id, profile,
+                component.getPackageName(), component.flattenToString()));
     }
 
     /** Called off-UI at callback receipt, before a model task can be discarded or a running loader can bind. */
@@ -107,8 +131,9 @@ public final class WorkspaceAvailability {
                         Intent intent = Intent.parseUri(cursor.getString(1), 0);
                         ComponentName component = intent.getComponent();
                         if (component != null && removal.packageName().equals(component.getPackageName())) {
-                            targets.add(new Target(database, cursor.getLong(0), removal.profile(),
-                                    removal.packageName(), component.flattenToString()));
+                            Target target = new Target(database, cursor.getLong(0), removal.profile(),
+                                    removal.packageName(), component.flattenToString());
+                            if (journal().belongsToPendingRemoval(target)) targets.add(target);
                         }
                     } catch (Exception e) {
                         // Corrupt intents remain on the loader's specialized validation path.
@@ -158,12 +183,22 @@ public final class WorkspaceAvailability {
             return Decision.PRESERVE;
         }
         LauncherActivityInfo activity = null;
+        ApplicationInfo application = null;
         try {
             LauncherApps apps = mContext.getSystemService(LauncherApps.class);
             Intent query = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(component);
             if (apps.isPackageEnabled(component.getPackageName(), user) && apps.isActivityEnabled(component, user)) {
                 activity = apps.resolveActivity(query, user);
                 if (activity != null && !component.equals(activity.getComponentName())) activity = null;
+            }
+            if (activity != null) {
+                application = activity.getApplicationInfo();
+            } else {
+                try {
+                    application = apps.getApplicationInfo(component.getPackageName(), PackageManager.MATCH_UNINSTALLED_PACKAGES, user);
+                } catch (PackageManager.NameNotFoundException e) {
+                    // Absence cannot classify a formerly unknown package as internal.
+                }
             }
             UserManager users = mContext.getSystemService(UserManager.class);
             if (activity == null && (!users.isUserUnlocked(user) || users.isQuietModeEnabled(user))) {
@@ -177,8 +212,8 @@ public final class WorkspaceAvailability {
         Boolean external = null;
         String uuid = null;
         String publicUuid = null;
-        if (activity != null) {
-            ApplicationInfo app = activity.getApplicationInfo();
+        if (application != null) {
+            ApplicationInfo app = application;
             external = (app.flags & ApplicationInfo.FLAG_EXTERNAL_STORAGE) != 0
                     || app.storageUuid != null && !StorageManager.UUID_DEFAULT.equals(app.storageUuid);
             uuid = app.storageUuid == null ? null : app.storageUuid.toString();
@@ -186,9 +221,8 @@ public final class WorkspaceAvailability {
                 try {
                     // API 29 has no reliable general adopted/private-to-public mapping. Record only an exact exposed UUID match.
                     for (StorageVolume volume : mContext.getSystemService(StorageManager.class).getStorageVolumes()) {
-                        if (uuid.equalsIgnoreCase(volume.getUuid())) {
+                        if (uuid.equalsIgnoreCase(volume.getUuid()) && Environment.MEDIA_MOUNTED.equals(volume.getState())) {
                             publicUuid = volume.getUuid();
-                            volume.getState(); // Readiness is a hint only; exact registration above remains decisive.
                             break;
                         }
                     }

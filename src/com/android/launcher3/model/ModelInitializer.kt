@@ -98,10 +98,10 @@ constructor(
         launcherApps.registerCallback(modelCallbacks, UI_HELPER_EXECUTOR.handler)
         lifeCycle.addCloseable { launcherApps.unregisterCallback(modelCallbacks) }
 
-        val bootReceiver = SimpleBroadcastReceiver(context, MODEL_EXECUTOR) { model.validateModelDataOnResume() }
+        val bootReceiver = SimpleBroadcastReceiver(context, MODEL_EXECUTOR) { model.requestAvailabilityRevalidation() }
         bootReceiver.register(Intent.ACTION_BOOT_COMPLETED)
         lifeCycle.addCloseable { bootReceiver.unregisterReceiverSafely() }
-        val storageReceiver = SimpleBroadcastReceiver(context, MODEL_EXECUTOR) { model.validateModelDataOnResume() }
+        val storageReceiver = SimpleBroadcastReceiver(context, MODEL_EXECUTOR) { model.requestAvailabilityRevalidation() }
         val storageFilter = IntentFilter().apply {
             addAction(Intent.ACTION_MEDIA_MOUNTED)
             addAction(Intent.ACTION_MEDIA_UNMOUNTED)

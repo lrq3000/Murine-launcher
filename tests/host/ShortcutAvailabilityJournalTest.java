@@ -18,7 +18,11 @@ public final class ShortcutAvailabilityJournalTest {
     private static final class MemoryDisk implements ShortcutAvailabilityJournal.Persistence {
         byte[] bytes;
         boolean fail;
-        public byte[] read() throws IOException { return bytes; }
+        boolean unreadable;
+        public byte[] read() throws IOException {
+            if (unreadable) throw new IOException("journal unreadable");
+            return bytes;
+        }
         public void write(byte[] value) throws IOException {
             if (fail) throw new IOException("interrupted atomic write");
             bytes = value.clone();
@@ -122,6 +126,44 @@ public final class ShortcutAvailabilityJournalTest {
         batch.endBatch();
         expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
                 new ShortcutAvailabilityJournal(batchDisk).evaluate(b, false, null, null, null));
+        MemoryDisk generationDisk = new MemoryDisk();
+        var generations = new ShortcutAvailabilityJournal(generationDisk);
+        generations.evaluate(a, true, false, "internal", null);
+        var inactiveLayout = new ShortcutAvailabilityJournal.Target("previous-layout-db", 42, 7, "example.app", "example.app/.Main");
+        generations.evaluate(inactiveLayout, true, false, "internal", null);
+        generations.packageRemoved(7, "example.app");
+        generations.added(7, "example.app");
+        expect(true, generations.created(newRow));
+        expect(true, generations.belongsToPendingRemoval(a));
+        expect(false, generations.belongsToPendingRemoval(newRow));
+        expect(false, new ShortcutAvailabilityJournal(generationDisk).belongsToPendingRemoval(newRow));
+        expect(true, new ShortcutAvailabilityJournal(generationDisk).belongsToPendingRemoval(a));
+        generations.removed(7, "example.app", List.of(a));
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE,
+                new ShortcutAvailabilityJournal(generationDisk).evaluate(inactiveLayout, true, false, "internal", null));
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE,
+                new ShortcutAvailabilityJournal(generationDisk).evaluate(newRow, true, false, "internal", null));
+        MemoryDisk fenceDisk = new MemoryDisk();
+        var fences = new ShortcutAvailabilityJournal(fenceDisk);
+        fences.removed(7, "example.app", List.of(a));
+        fenceDisk.fail = true;
+        expect(false, fences.created(a));
+        expect(false, fences.created(a));
+        var moved = new ShortcutAvailabilityJournal(new MemoryDisk());
+        moved.evaluate(a, true, false, "internal", null);
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                moved.evaluate(a, false, true, "moved-adopted-uuid", null));
+        fenceDisk.unreadable = true;
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(fenceDisk).evaluate(a, false, null, null, null));
+        MemoryDisk lostEventDisk = new MemoryDisk();
+        var beforeDeath = new ShortcutAvailabilityJournal(lostEventDisk);
+        beforeDeath.evaluate(a, true, false, "internal", null);
+        lostEventDisk.fail = true;
+        beforeDeath.unavailable(7, "example.app");
+        lostEventDisk.fail = false;
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(lostEventDisk).evaluate(a, false, null, null, null));
         System.out.println("PASS " + sCount + " journal assertions");
     }
 }

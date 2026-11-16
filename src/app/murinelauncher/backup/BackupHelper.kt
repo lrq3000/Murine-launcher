@@ -12,6 +12,7 @@ import com.android.launcher3.LauncherFiles
 import com.android.launcher3.LauncherPrefs
 import com.android.launcher3.LauncherSettings
 import com.android.launcher3.provider.RestoreDbTask
+import com.android.launcher3.model.WorkspaceAvailability
 import io.airlift.compress.tar.TarEntry
 import io.airlift.compress.tar.TarInputStream
 import io.airlift.compress.tar.TarOutputStream
@@ -130,6 +131,10 @@ object BackupHelper {
         val staging = stagingDir(context)
         if (!staging.exists()) return
         try {
+            // A user-requested restore is a new workspace incarnation, not an old installation's tombstone target.
+            staging.listFiles()!!.filter { it.name.endsWith(".db") }.forEach {
+                WorkspaceAvailability.prepareRestoredDatabase(context, it)
+            }
             // Drop all current grid DBs
             LauncherFiles.GRID_DB_FILES.map(context::getDatabasePath).forEach { db ->
                 listOf("", "-wal", "-shm", "-journal").forEach { File(db.path + it).delete() }

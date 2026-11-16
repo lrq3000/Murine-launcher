@@ -19,61 +19,32 @@ package com.android.launcher3.model;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.LauncherApps;
-import android.os.UserHandle;
 
 import com.android.launcher3.LauncherModel;
-import com.android.launcher3.util.ApplicationInfoWrapper;
 import com.android.launcher3.util.PackageUserKey;
 
-import java.util.ArrayList;
 import java.util.Set;
 
 /**
  * Helper class to re-query app status when SD-card becomes available.
  *
- * During first load, just after reboot, some apps on sdcard might not be available immediately due
- * to some race conditions in the system. We wait for ACTION_BOOT_COMPLETED and process such
- * apps again.
+ * Legacy one-shot hook; normal boot/media observations are lifecycle-owned by ModelInitializer. Boot completion only requests a recheck and cannot prove uninstall.
  */
 public class SdCardAvailableReceiver extends BroadcastReceiver {
 
     private final LauncherModel mModel;
     private final Context mContext;
-    private final Set<PackageUserKey> mPackages;
 
     public SdCardAvailableReceiver(
             Context context, LauncherModel model, Set<PackageUserKey> packages) {
         mContext = context;
         mModel = model;
-        mPackages = packages;
     }
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        final LauncherApps launcherApps = context.getSystemService(LauncherApps.class);
-        for (PackageUserKey puk : mPackages) {
-            UserHandle user = puk.mUser;
-
-            final ArrayList<String> packagesRemoved = new ArrayList<>();
-            final ArrayList<String> packagesUnavailable = new ArrayList<>();
-
-            if (!launcherApps.isPackageEnabled(puk.mPackageName, user)) {
-                if (new ApplicationInfoWrapper(context, puk.mPackageName, user).isOnSdCard()) {
-                    packagesUnavailable.add(puk.mPackageName);
-                } else {
-                    packagesRemoved.add(puk.mPackageName);
-                }
-            }
-            if (!packagesRemoved.isEmpty()) {
-                mModel.newModelCallbacks().onPackagesRemoved(user, packagesRemoved);
-            }
-            if (!packagesUnavailable.isEmpty()) {
-                mModel.newModelCallbacks().onPackagesUnavailable(
-                        packagesUnavailable.toArray(new String[packagesUnavailable.size()]),
-                        user, false);
-            }
-        }
+        // Boot completion is a revalidation hint, never evidence that a missing app was uninstalled.
+        mModel.requestAvailabilityRevalidation();
 
         // Unregister the broadcast receiver, just in case
         mContext.unregisterReceiver(this);

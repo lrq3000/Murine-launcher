@@ -43,6 +43,9 @@ private const val TAG = "ModelCallbacks"
 private const val MANAGED_SMARTSPACE_RANK = 777
 
 class ModelCallbacks(private var launcher: Launcher) : BgDataModel.Callbacks {
+    override fun bindItemInsertFailed() {
+        android.widget.Toast.makeText(launcher, R.string.workspace_item_save_failed, android.widget.Toast.LENGTH_LONG).show()
+    }
 
     var synchronouslyBoundPages = LIntSet()
     var pagesToBindSynchronously = LIntSet()

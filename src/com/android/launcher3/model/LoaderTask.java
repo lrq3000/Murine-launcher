@@ -38,7 +38,6 @@ import static com.android.launcher3.util.PackageManagerHelper.hasShortcutsPermis
 import android.appwidget.AppWidgetProviderInfo;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.LauncherActivityInfo;
 import android.content.pm.LauncherApps;
 import android.content.pm.PackageInstaller;
@@ -50,6 +49,7 @@ import android.os.Process;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Log;
 import android.util.LongSparseArray;
 
@@ -275,7 +275,12 @@ public class LoaderTask implements Runnable {
         }
         try (LauncherModel.LoaderTransaction transaction = mModel.beginLoader(this)) {
             List<CacheableShortcutInfo> allShortcuts = new ArrayList<>();
-            loadWorkspace(allShortcuts, "", new HashMap<>(), memoryLogger, restoreEventLogger);
+            mModel.getWorkspaceAvailability().beginLoad();
+            try {
+                loadWorkspace(allShortcuts, "", new HashMap<>(), memoryLogger, restoreEventLogger);
+            } finally {
+                mModel.getWorkspaceAvailability().endLoad();
+            }
 
             // Sanitize data re-syncs widgets/shortcuts based on the workspace loaded from db.
             // sanitizeData should not be invoked if the workspace is loaded from a db different
@@ -293,7 +298,8 @@ public class LoaderTask implements Runnable {
             }
 
             verifyNotStopped();
-            mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false);
+            mModel.getWorkspaceAvailability().reconcileBeforeBind(mBgDataModel, mIconCache,
+                    () -> mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false));
             logASplit("bindWorkspace finished");
 
             mModelDelegate.workspaceLoadComplete();
@@ -456,7 +462,9 @@ public class LoaderTask implements Runnable {
             dbController.tryMigrateDB(restoreEventLogger, mModelDelegate);
         }
         Log.d(TAG, "loadWorkspace: loading default favorites if necessary");
+        mModel.getWorkspaceAvailability().reconcilePendingRemovals();
         dbController.loadDefaultFavoritesIfNecessary();
+        mModel.getWorkspaceAvailability().retireAbsentRows();
 
         synchronized (mBgDataModel) {
             mBgDataModel.clear();
@@ -525,6 +533,12 @@ public class LoaderTask implements Runnable {
 
             processFolderItems();
             processAppPairItems();
+
+            for (ItemInfo item : mBgDataModel.itemsIdMap) {
+                if (item instanceof WorkspaceItemInfo workspace) {
+                    mModel.getWorkspaceAvailability().cacheAppearance(workspace, mIconCache);
+                }
+            }
 
             c.commitRestoredItems();
         }
@@ -605,15 +619,19 @@ public class LoaderTask implements Runnable {
             folder.getContents().sort(Folder.ITEM_POS_COMPARATOR);
             verifiers.forEach(verifier -> verifier.setFolderInfo(folder));
             int size = folder.getContents().size();
+            boolean hasUnavailableChild = folder.getAppContents().stream().anyMatch(child ->
+                    child.itemType == Favorites.ITEM_TYPE_APPLICATION
+                            && (child.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0);
 
             // Update ranks here to ensure there are no gaps caused by removed folder items.
             // Ranks are the source of truth for folder items, so cellX and cellY can be
             // ignored for now. Database will be updated once user manually modifies folder.
             for (int rank = 0; rank < size; ++rank) {
                 ItemInfo info = folder.getContents().get(rank);
-                info.rank = rank;
+                if (!hasUnavailableChild) info.rank = rank;
 
                 if (info instanceof WorkspaceItemInfo wii
+                        && (wii.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) == 0
                         && wii.getMatchingLookupFlag().isVisuallyLessThan(DESKTOP_ICON_FLAG)
                         && wii.itemType == Favorites.ITEM_TYPE_APPLICATION
                         && verifiers.stream().anyMatch(it -> it.isItemInPreview(info.rank))) {
@@ -629,6 +647,10 @@ public class LoaderTask implements Runnable {
             List<IconRequestInfo<WorkspaceItemInfo>> iconRequestInfos) {
         Trace.beginSection("LoadWorkspaceIconsInBulk");
         try {
+            Map<WorkspaceItemInfo, CharSequence> savedTitles = new HashMap<>();
+            for (IconRequestInfo<WorkspaceItemInfo> request : iconRequestInfos) {
+                savedTitles.put(request.itemInfo, request.itemInfo.title);
+            }
             mIconCache.getTitlesAndIconsInBulk(iconRequestInfos);
             for (IconRequestInfo<WorkspaceItemInfo> iconRequestInfo : iconRequestInfos) {
                 WorkspaceItemInfo wai = iconRequestInfo.itemInfo;
@@ -636,7 +658,9 @@ public class LoaderTask implements Runnable {
                     logASplit("tryLoadWorkspaceIconsInBulk: default icon found for "
                             + wai.getTargetComponent() + ", will attempt to load from iconBlob");
                     iconRequestInfo.loadIconFromDbBlob(mContext);
+                    if (!TextUtils.isEmpty(savedTitles.get(wai))) wai.title = savedTitles.get(wai);
                 }
+                if (TextUtils.isEmpty(wai.title)) wai.title = savedTitles.get(wai);
             }
         } finally {
             Trace.endSection();
@@ -649,7 +673,8 @@ public class LoaderTask implements Runnable {
             for (ItemInfo info : mBgDataModel.itemsIdMap) {
                 if (info instanceof WorkspaceItemInfo) {
                     WorkspaceItemInfo si = (WorkspaceItemInfo) info;
-                    if (si.isPromise() && si.getTargetComponent() != null) {
+                    if ((si.isPromise() || (si.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0)
+                            && si.getTargetComponent() != null) {
                         updateHandler.addPackagesToIgnore(
                                 si.user, si.getTargetComponent().getPackageName());
                     }
@@ -699,13 +724,7 @@ public class LoaderTask implements Runnable {
         // Update pinned state of model shortcuts
         mBgDataModel.updateShortcutPinnedState(mContext);
 
-        if (!Utilities.isBootCompleted() && !mPendingPackages.isEmpty()) {
-            mContext.registerReceiver(
-                    new SdCardAvailableReceiver(mContext, mModel, mPendingPackages),
-                    new IntentFilter(Intent.ACTION_BOOT_COMPLETED),
-                    null,
-                    MODEL_EXECUTOR.getHandler());
-        }
+        // Boot/storage hints are registered once by ModelInitializer and released with the model lifecycle.
     }
 
     private List<LauncherActivityInfo> loadAllApps() {

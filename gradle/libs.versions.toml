@@ -127,6 +127,7 @@ kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.
 lottie = { module = "com.airbnb.android:lottie", version.ref = "lottie" }
 material = { module = "com.google.android.material:material", version.ref = "material" }
 mockito-core = { module = "org.mockito:mockito-core", version.ref = "mockitoCore" }
+mockito-android = { module = "org.mockito:mockito-android", version.ref = "mockitoCore" }
 protobuf-javalite = { module = "com.google.protobuf:protobuf-javalite", version.ref = "protobufJavalite" }
 robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
 rules = { module = "androidx.test:rules", version.ref = "rulesVersion" }

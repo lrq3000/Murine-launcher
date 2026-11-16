@@ -165,9 +165,22 @@ class WorkspaceItemProcessor(
         }
         val appInfoWrapper = ApplicationInfoWrapper(context, targetPkg, c.user)
         var validTarget = launcherApps.isPackageEnabled(targetPkg, c.user)
+        // Ordinary shortcuts retain their exact saved target during unresolved storage/package registration.
+        val availability = if (c.itemType == Favorites.ITEM_TYPE_APPLICATION && c.restoreFlag == 0 && cn != null && !appInfoWrapper.isArchived())
+            c.getAvailabilityDecision(intent) else ShortcutAvailabilityJournal.Decision.NORMAL
+        if (availability == ShortcutAvailabilityJournal.Decision.REMOVE) {
+            c.markDeleted("Confirmed uninstall for item id=${c.id}", RestoreError.APP_NOT_INSTALLED_EXTERNAL_MEDIA)
+            return
+        }
+        val preserveUnavailable = availability == ShortcutAvailabilityJournal.Decision.PRESERVE
+        if (preserveUnavailable) {
+            allowMissingTarget = true
+            disabledState = disabledState or WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE
+            pendingPackages.add(PackageUserKey(targetPkg, c.user))
+        }
 
         // If it's a deep shortcut, we'll use pinned shortcuts to restore it
-        if (cn != null && validTarget && (c.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT)) {
+        if (!preserveUnavailable && cn != null && validTarget && (c.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT)) {
             // If the apk is present and the shortcut points to a specific component.
 
             // If the component is already present
@@ -195,7 +208,7 @@ class WorkspaceItemProcessor(
                 }
             }
         }
-        if (intent.`package` == null) {
+        if (!preserveUnavailable && intent.`package` == null) {
             intent.`package` = targetPkg
         }
 
@@ -213,6 +226,7 @@ class WorkspaceItemProcessor(
                 // Points to a valid app (superset of cn != null) but the apk
                 // is not available.
                 when {
+                    preserveUnavailable -> { /* Already retained above; no fallback intent or boot deadline. */ }
                     c.restoreFlag != 0 || isPreArchivedShortcut -> {
                         // Package is not yet available but might be
                         // installed later.
@@ -292,6 +306,7 @@ class WorkspaceItemProcessor(
         val useLowResIcon = !c.isOnWorkspaceOrHotseat
         val info: WorkspaceItemInfo?
         when {
+            preserveUnavailable -> info = c.loadUnavailableApplication(intent)
             c.restoreFlag != 0 -> {
                 // Already verified above that user is same as default user
                 info = c.getRestoredItemInfo(intent, isPreArchivedShortcut)
@@ -353,7 +368,7 @@ class WorkspaceItemProcessor(
             }
         }
         if (info != null) {
-            if (info.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
+            if (!preserveUnavailable && info.itemType != Favorites.ITEM_TYPE_DEEP_SHORTCUT) {
                 // Skip deep shortcuts; their title and icons have already been
                 // loaded above.
                 iconRequestInfos.add(c.createIconRequestInfo(info, useLowResIcon))

@@ -91,6 +91,7 @@ public class BaseLauncherBinder {
     final Callbacks[] mCallbacksList;
 
     private int mMyBindingId;
+    private long mAvailabilityBindingId;
 
     @AssistedInject
     public BaseLauncherBinder(
@@ -113,6 +114,7 @@ public class BaseLauncherBinder {
      * Binds all loaded data to actual views on the main thread.
      */
     public void bindWorkspace(boolean incrementBindId, boolean isBindSync) {
+        mAvailabilityBindingId = mModel.getWorkspaceAvailability().getBindGuard().snapshot();
         Trace.beginSection("BaseLauncherBinder#bindWorkspace");
         try {
             // Save a copy of all the bg-thread collections
@@ -228,7 +230,9 @@ public class BaseLauncherBinder {
     }
 
     protected void executeCallbacksTask(CallbackTask task, Executor executor) {
+        final long generation = mAvailabilityBindingId;
         executor.execute(() -> {
+            if (!mModel.getWorkspaceAvailability().getBindGuard().isCurrent(generation)) return;
             if (mMyBindingId != mBgDataModel.lastBindId) {
                 Log.d(TAG, "Too many consecutive reloads, skipping obsolete data-bind");
                 return;
@@ -258,6 +262,7 @@ public class BaseLauncherBinder {
         private final IntSparseArrayMap<ItemInfo> mItemIdMap;
         private final IntArray mOrderedScreenIds;
         private final ArrayList<FixedContainerItems> mExtraItems;
+        private final long mAvailabilityGeneration;
 
         UnifiedWorkspaceBinder(
                 Callbacks callbacks,
@@ -268,6 +273,7 @@ public class BaseLauncherBinder {
             mItemIdMap = itemIdMap;
             mExtraItems = extraItems;
             mOrderedScreenIds = orderedScreenIds;
+            mAvailabilityGeneration = mAvailabilityBindingId;
         }
 
         private void bind(boolean isBindSync, int workspaceItemCount) {
@@ -355,8 +361,8 @@ public class BaseLauncherBinder {
             executeCallbacksTask(c -> c.bindStringCache(cacheClone), pendingExecutor);
 
             executeCallbacksTask(c -> c.finishBindingItems(currentScreenIds), pendingExecutor);
-            pendingExecutor.execute(() -> ItemInstallQueue.INSTANCE.get(mContext)
-                    .resumeModelPush(FLAG_LOADER_RUNNING));
+            pendingExecutor.execute(mModel.getWorkspaceAvailability().getBindGuard().guard(mAvailabilityGeneration,
+                    () -> ItemInstallQueue.INSTANCE.get(mContext).resumeModelPush(FLAG_LOADER_RUNNING)));
         }
 
         /**
@@ -393,6 +399,7 @@ public class BaseLauncherBinder {
 
         protected void executeCallbacksTask(CallbackTask task, Executor executor) {
             executor.execute(() -> {
+                if (!mModel.getWorkspaceAvailability().getBindGuard().isCurrent(mAvailabilityGeneration)) return;
                 if (mMyBindingId != mBgDataModel.lastBindId) {
                     Log.d(TAG, "Too many consecutive reloads, skipping obsolete data-bind");
                     return;

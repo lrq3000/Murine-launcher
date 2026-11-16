@@ -19,6 +19,8 @@ package com.android.launcher3.model
 import android.app.admin.DevicePolicyManager.ACTION_DEVICE_POLICY_RESOURCE_UPDATED
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.LauncherApps
 import android.content.pm.LauncherApps.ArchiveCompatibilityParams
@@ -92,8 +94,24 @@ constructor(
         // System changes
         val modelCallbacks = model.newModelCallbacks()
         val launcherApps = context.getSystemService(LauncherApps::class.java)!!
-        launcherApps.registerCallback(modelCallbacks, MODEL_EXECUTOR.handler)
+        // Record consequential events off-UI even while MODEL_EXECUTOR is busy loading; model mutation remains serialized there.
+        launcherApps.registerCallback(modelCallbacks, UI_HELPER_EXECUTOR.handler)
         lifeCycle.addCloseable { launcherApps.unregisterCallback(modelCallbacks) }
+
+        val bootReceiver = SimpleBroadcastReceiver(context, MODEL_EXECUTOR) { model.requestAvailabilityRevalidation() }
+        bootReceiver.register(Intent.ACTION_BOOT_COMPLETED)
+        lifeCycle.addCloseable { bootReceiver.unregisterReceiverSafely() }
+        val storageReceiver = SimpleBroadcastReceiver(context, MODEL_EXECUTOR) { model.requestAvailabilityRevalidation() }
+        val storageFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_MEDIA_MOUNTED)
+            addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_REMOVED)
+            addAction(Intent.ACTION_MEDIA_EJECT)
+            addDataScheme("file")
+        }
+        androidx.core.content.ContextCompat.registerReceiver(context, storageReceiver, storageFilter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        lifeCycle.addCloseable { storageReceiver.unregisterReceiverSafely() }
 
         if (Utilities.ATLEAST_V && Flags.enableSupportForArchiving()) {
             launcherApps.setArchiveCompatibility(

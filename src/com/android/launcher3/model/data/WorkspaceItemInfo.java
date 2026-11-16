@@ -140,12 +140,16 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
     @Override
     public void onAddToDatabase(@NonNull ContentWriter writer) {
         super.onAddToDatabase(writer);
-        writer.put(Favorites.TITLE, title)
-                .put(Favorites.INTENT, getIntent())
+        // Position edits while unavailable must not replace the last good cached title/icon with a failed-query fallback.
+        boolean available = itemType != Favorites.ITEM_TYPE_APPLICATION || status != 0 || isArchived()
+                || (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) == 0;
+        if ((available || id == NO_ID) && (itemType != Favorites.ITEM_TYPE_APPLICATION
+                || status != 0 || isArchived() || id == NO_ID || !TextUtils.isEmpty(title))) writer.put(Favorites.TITLE, title);
+        writer.put(Favorites.INTENT, getIntent())
                 .put(Favorites.OPTIONS, options)
                 .put(Favorites.RESTORED, status);
 
-        if (!getMatchingLookupFlag().useLowRes()) {
+        if (available && !getMatchingLookupFlag().useLowRes() && bitmap != null && !bitmap.isNullOrLowRes()) {
             writer.putIcon(bitmap, user);
         }
     }

@@ -89,6 +89,7 @@ public class LoaderCursor extends CursorWrapper {
 
     private final Context mContext;
     private final LauncherModel mModel;
+    private final WorkspaceAvailability mAvailability;
     private final PackageManagerHelper mPmHelper;
     private final IconCache mIconCache;
     private final InvariantDeviceProfile mIDP;
@@ -144,12 +145,14 @@ public class LoaderCursor extends CursorWrapper {
             IconCache iconCache,
             InvariantDeviceProfile idp,
             LauncherModel model,
-            PackageManagerHelper pmHelper) {
+            PackageManagerHelper pmHelper,
+            WorkspaceAvailability availability) {
         super(cursor);
         mContext = context;
         mIconCache = iconCache;
         mIDP = idp;
         mModel = model;
+        mAvailability = availability;
         mPmHelper = pmHelper;
 
         allUsers = userManagerState.allUsers;
@@ -188,7 +191,7 @@ public class LoaderCursor extends CursorWrapper {
             itemType = getInt(mItemTypeIndex);
             container = getInt(mContainerIndex);
             id = getInt(mIdIndex);
-            serialNumber = getInt(mProfileIdIndex);
+            serialNumber = getLong(mProfileIdIndex);
             user = allUsers.get(serialNumber);
             restoreFlag = getInt(mRestoredIndex);
         }
@@ -204,6 +207,19 @@ public class LoaderCursor extends CursorWrapper {
             Log.e(TAG, "Error parsing Intent");
             return null;
         }
+    }
+
+    public ShortcutAvailabilityJournal.Decision getAvailabilityDecision(Intent intent) {
+        WorkspaceAvailability availability = mAvailability;
+        ShortcutAvailabilityJournal.Decision decision = availability.evaluate(id, serialNumber, intent, user);
+        if (decision == ShortcutAvailabilityJournal.Decision.NORMAL && !Utilities.isBootCompleted()
+                && intent.getComponent() != null) {
+            // Preboot uncertainty can begin recovery; completing boot never ends it or proves removal.
+            availability.recordEvent(PackageUpdatedTask.OP_UNAVAILABLE, user,
+                    new String[] {intent.getComponent().getPackageName()});
+            return availability.evaluate(id, serialNumber, intent, user);
+        }
+        return decision;
     }
 
     @VisibleForTesting
@@ -224,6 +240,23 @@ public class LoaderCursor extends CursorWrapper {
         return info;
     }
 
+    /** Load the saved normal appearance without asking a missing APK to replace it with a generic icon/title. */
+    public WorkspaceItemInfo loadUnavailableApplication(Intent intent) {
+        WorkspaceItemInfo info = new WorkspaceItemInfo();
+        info.user = user;
+        info.intent = intent;
+        info.title = getString(mTitleIndex);
+        if (!loadIconFromDb(info)) {
+            CharSequence savedTitle = info.title;
+            mIconCache.getTitleAndIcon(info, DEFAULT_LOOKUP_FLAG);
+            if (!TextUtils.isEmpty(savedTitle)) info.title = savedTitle;
+        }
+        if (TextUtils.isEmpty(info.title)) info.title = intent.getComponent().getClassName();
+        info.contentDescription = mIconCache.getUserBadgedLabel(info.title, user);
+        mAvailability.populateRuntimeFlags(info);
+        return info;
+    }
+
     /**
      * Loads the icon from the cursor and updates the {@param info} if the icon is an app resource.
      */
@@ -233,7 +266,8 @@ public class LoaderCursor extends CursorWrapper {
 
     public IconRequestInfo<WorkspaceItemInfo> createIconRequestInfo(
             WorkspaceItemInfo wai, boolean useLowResIcon) {
-        byte[] iconBlob = itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT || restoreFlag != 0
+        byte[] iconBlob = itemType == Favorites.ITEM_TYPE_APPLICATION
+                || itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT || restoreFlag != 0
                 || (wai.isInactiveArchive() && Flags.restoreArchivedAppIconsFromDb())
                 ? getIconBlob() : null;
         return new IconRequestInfo<>(wai, mActivityInfo, iconBlob, useLowResIcon);
@@ -406,7 +440,7 @@ public class LoaderCursor extends CursorWrapper {
                     info.title = componentName.getClassName();
                 }
             } else {
-                info.title = "";
+                info.title = getTitle();
             }
         }
 

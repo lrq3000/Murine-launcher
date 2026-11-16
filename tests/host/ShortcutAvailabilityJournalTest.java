@@ -1,0 +1,173 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ */
+package com.android.launcher3.model;
+
+import java.io.IOException;
+import java.util.List;
+
+/** Runs real policy/codec behavior without Android, JUnit, network or Gradle dependencies. */
+public final class ShortcutAvailabilityJournalTest {
+    private static int sCount;
+    private static final class MemoryDisk implements ShortcutAvailabilityJournal.Persistence {
+        byte[] bytes;
+        boolean fail;
+        boolean unreadable;
+        boolean uncertain;
+        public boolean isUncertain() { return uncertain; }
+        public void markUncertain() { uncertain = true; }
+        public void clearUncertain() { uncertain = false; }
+        public byte[] read() throws IOException {
+            if (unreadable) throw new IOException("journal unreadable");
+            return bytes;
+        }
+        public void write(byte[] value) throws IOException {
+            if (fail) throw new IOException("interrupted atomic write");
+            bytes = value.clone();
+        }
+    }
+
+    private static ShortcutAvailabilityJournal.Target target(long profile, String component) {
+        return new ShortcutAvailabilityJournal.Target("workspace-generation-A", 42, profile,
+                "example.app", component);
+    }
+
+    private static void expect(Object expected, Object actual) {
+        sCount++;
+        if (!expected.equals(actual)) throw new AssertionError("expected " + expected + ", got " + actual);
+    }
+
+    public static void main(String[] args) {
+        MemoryDisk disk = new MemoryDisk();
+        ShortcutAvailabilityJournal journal = new ShortcutAvailabilityJournal(disk);
+        var a = target(7, "example.app/.Main");
+        var b = target(7, "example.app/.Second");
+        // A negative lookup after boot, after any mounted volume, or after arbitrary time has no extra authority.
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE, journal.evaluate(a, false, null, null, null));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(disk).evaluate(a, false, null, null, null));
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE,
+                journal.evaluate(a, true, true, "adopted-install-uuid", null));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE, journal.evaluate(b, false, null, null, null));
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE,
+                journal.evaluate(a, true, true, "adopted-install-uuid", null));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE, journal.evaluate(b, false, null, null, null));
+        expect("adopted-install-uuid", new ShortcutAvailabilityJournal(disk).installationUuid(7, "example.app"));
+        expect("", new ShortcutAvailabilityJournal(disk).publicVolumeUuid(7, "example.app"));
+
+        MemoryDisk internalDisk = new MemoryDisk();
+        var internal = new ShortcutAvailabilityJournal(internalDisk);
+        internal.evaluate(a, true, false, "internal", null);
+        expect(ShortcutAvailabilityJournal.Decision.NORMAL, internal.evaluate(a, false, null, null, null));
+        internal.unavailable(7, "example.app");
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(internalDisk).evaluate(a, false, null, null, null));
+        internal.evaluate(a, true, false, "internal", null);
+        expect(ShortcutAvailabilityJournal.Decision.NORMAL, internal.evaluate(a, false, null, null, null));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE, internal.evaluate(b, false, null, null, null));
+
+        // Confirmed removal is durable, profile/component/database scoped, and survives a rapid re-add.
+        expect(true, journal.removed(7, "example.app", List.of(a, b)));
+        journal.added(7, "example.app");
+        var restart = new ShortcutAvailabilityJournal(disk);
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE, restart.evaluate(a, true, true, "new-install", null));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                restart.evaluate(target(8, "example.app/.Main"), false, null, null, null));
+        var newRow = new ShortcutAvailabilityJournal.Target("workspace-generation-A", 43, 7,
+                "example.app", "example.app/.Main");
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE, restart.evaluate(newRow, true, false, "internal", null));
+        var newDb = new ShortcutAvailabilityJournal.Target("workspace-generation-B", 42, 7,
+                "example.app", "example.app/.Main");
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE, restart.evaluate(newDb, true, false, "internal", null));
+
+        // Receipt while loading is durable before the model can obtain a row snapshot.
+        restart.packageRemoved(19, "pending.app");
+        restart.added(19, "pending.app");
+        var pendingRestart = new ShortcutAvailabilityJournal(disk);
+        expect(true, pendingRestart.hasPendingRemoval(19, "pending.app"));
+        var pendingRow = new ShortcutAvailabilityJournal.Target("workspace-generation-A", 71, 19,
+                "pending.app", "pending.app/.Main");
+        expect(true, pendingRestart.removed(19, "pending.app", List.of(pendingRow)));
+        expect(false, new ShortcutAvailabilityJournal(disk).hasPendingRemoval(19, "pending.app"));
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE,
+                new ShortcutAvailabilityJournal(disk).evaluate(pendingRow, true, false, "internal", null));
+
+        // Metadata corruption must invalidate the whole authority, not leave partially trusted tombstones.
+        MemoryDisk corruptDisk = new MemoryDisk();
+        corruptDisk.bytes = disk.bytes.clone();
+        corruptDisk.bytes[corruptDisk.bytes.length - 1] ^= 1;
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(corruptDisk).evaluate(a, false, null, null, null));
+        new ShortcutAvailabilityJournal(disk).retireAbsent("workspace-generation-A", java.util.Set.of(b, pendingRow, newRow));
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE,
+                new ShortcutAvailabilityJournal(disk).evaluate(a, true, false, "internal", null));
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE,
+                new ShortcutAvailabilityJournal(disk).evaluate(b, false, null, null, null));
+
+        // Failed storage must never turn missing targets or stale removal metadata into a purge.
+        disk.fail = true;
+        expect(false, restart.removed(8, "example.app", List.of(target(8, "example.app/.Main"))));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                restart.evaluate(target(8, "example.app/.Main"), false, null, null, null));
+        internalDisk.bytes = new byte[] {1, 2, 3};
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(internalDisk).evaluate(a, false, null, null, null));
+
+        MemoryDisk batchDisk = new MemoryDisk();
+        var batch = new ShortcutAvailabilityJournal(batchDisk);
+        batch.beginBatch();
+        batch.evaluate(a, false, null, null, null);
+        batch.evaluate(b, false, null, null, null);
+        expect(true, batchDisk.bytes == null);
+        batch.packageRemoved(7, "example.app");
+        expect(true, new ShortcutAvailabilityJournal(batchDisk).hasPendingRemoval(7, "example.app"));
+        batch.endBatch();
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(batchDisk).evaluate(b, false, null, null, null));
+        MemoryDisk generationDisk = new MemoryDisk();
+        var generations = new ShortcutAvailabilityJournal(generationDisk);
+        generations.evaluate(a, true, false, "internal", null);
+        var inactiveLayout = new ShortcutAvailabilityJournal.Target("previous-layout-db", 42, 7, "example.app", "example.app/.Main");
+        generations.evaluate(inactiveLayout, true, false, "internal", null);
+        generations.packageRemoved(7, "example.app");
+        generations.added(7, "example.app");
+        expect(true, generations.created(newRow));
+        expect(true, generations.belongsToPendingRemoval(a));
+        expect(false, generations.belongsToPendingRemoval(newRow));
+        expect(false, new ShortcutAvailabilityJournal(generationDisk).belongsToPendingRemoval(newRow));
+        expect(true, new ShortcutAvailabilityJournal(generationDisk).belongsToPendingRemoval(a));
+        generations.removed(7, "example.app", List.of(a));
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE,
+                new ShortcutAvailabilityJournal(generationDisk).evaluate(inactiveLayout, true, false, "internal", null));
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE,
+                new ShortcutAvailabilityJournal(generationDisk).evaluate(newRow, true, false, "internal", null));
+        MemoryDisk fenceDisk = new MemoryDisk();
+        var fences = new ShortcutAvailabilityJournal(fenceDisk);
+        fences.removed(7, "example.app", List.of(a));
+        fenceDisk.fail = true;
+        expect(false, fences.created(a));
+        expect(false, fences.created(a));
+        var moved = new ShortcutAvailabilityJournal(new MemoryDisk());
+        moved.evaluate(a, true, false, "internal", null);
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                moved.evaluate(a, false, true, "moved-adopted-uuid", null));
+        fenceDisk.unreadable = true;
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(fenceDisk).evaluate(a, false, null, null, null));
+        MemoryDisk lostEventDisk = new MemoryDisk();
+        var beforeDeath = new ShortcutAvailabilityJournal(lostEventDisk);
+        beforeDeath.evaluate(a, true, false, "internal", null);
+        lostEventDisk.fail = true;
+        beforeDeath.unavailable(7, "example.app");
+        lostEventDisk.fail = false;
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(lostEventDisk).evaluate(a, false, null, null, null));
+        System.out.println("PASS " + sCount + " journal assertions");
+    }
+}

@@ -47,6 +47,7 @@ import com.android.launcher3.BubbleTextView;
 import com.android.launcher3.Flags;
 import com.android.launcher3.InvariantDeviceProfile;
 import com.android.launcher3.Launcher;
+import com.android.launcher3.LauncherAppState;
 import com.android.launcher3.LauncherSettings;
 import com.android.launcher3.R;
 import com.android.launcher3.Utilities;
@@ -284,6 +285,9 @@ public class ItemClickHandler {
      * @return true iff the disabled item click has been handled.
      */
     public static boolean handleDisabledItemClicked(WorkspaceItemInfo shortcut, Context context) {
+        if ((shortcut.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0) {
+            LauncherAppState.getInstance(context).getModel().requestAvailabilityRevalidation();
+        }
         final int disabledFlags = shortcut.runtimeStatusFlags
                 & WorkspaceItemInfo.FLAG_DISABLED_MASK;
         // Handle the case where the disabled reason is DISABLED_REASON_VERSION_LOWER.

@@ -1,0 +1,358 @@
+/*
+ * Copyright (C) 2026 The Android Open Source Project
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ */
+package com.android.launcher3.model;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.Collections;
+import java.util.stream.Collectors;
+import java.util.zip.CRC32;
+
+/** Durable ordinary-application availability decisions, independent of Android package queries. */
+public final class ShortcutAvailabilityJournal {
+    public enum Decision { NORMAL, PRESERVE, AVAILABLE, REMOVE }
+    public interface Persistence {
+        byte[] read() throws IOException;
+        void write(byte[] bytes) throws IOException;
+        default boolean isUncertain() throws IOException { return false; }
+        default void markUncertain() throws IOException { }
+        default void clearUncertain() throws IOException { }
+    }
+    public record Target(String database, long id, long profile, String packageName, String component) { }
+    public record Removal(long profile, String packageName) { }
+    private record PackageKey(long profile, String name) { }
+    private static final int MAGIC = 0x53415631;
+    private static final int VERSION = 1;
+    private static final int MAX_ENTRIES = 100_000;
+    private static final class PackageState {
+        int external = -1;
+        boolean recovering;
+        boolean pendingRemoval;
+        long generation;
+        long removalGeneration;
+        String installationUuid = "";
+        String publicVolumeUuid = "";
+    }
+
+    private final Persistence mPersistence;
+    private final Map<PackageKey, PackageState> mPackages = new HashMap<>();
+    private final Map<Target, Boolean> mItems = new HashMap<>();
+    private final Map<Target, Long> mCreatedGenerations = new HashMap<>();
+    private final Set<Target> mRemoved = new HashSet<>();
+    private boolean mHealthy = true;
+    private int mBatchDepth;
+    private boolean mDirty;
+
+    public synchronized void beginBatch() {
+        mBatchDepth++;
+    }
+
+    public synchronized void endBatch() {
+        if (mBatchDepth == 0) throw new IllegalStateException("Unbalanced availability batch");
+        if (--mBatchDepth == 0 && mDirty) persistNow();
+    }
+
+    public ShortcutAvailabilityJournal(Persistence persistence) {
+        mPersistence = persistence;
+        try {
+            byte[] bytes = persistence.read();
+            if (bytes != null) decode(bytes);
+            if (persistence.isUncertain()) {
+                // The previous process could not finish a write. Do not treat the older valid file as current authority.
+                mPackages.values().forEach(state -> { state.external = -1; state.recovering = true; state.pendingRemoval = false; });
+                mRemoved.clear();
+                mHealthy = false;
+                mDirty = true;
+            }
+        } catch (IOException | RuntimeException e) {
+            // Never trust a partially decoded removal list or internal classification.
+            mPackages.clear();
+            mItems.clear();
+            mCreatedGenerations.clear();
+            mRemoved.clear();
+            mHealthy = false;
+        }
+    }
+
+    /** Only exact target resolution can end recovery; volume state and wall-clock time are deliberately not evidence. */
+    public synchronized Decision evaluate(Target target, boolean exact, Boolean external,
+            String uuid, String volume) {
+        if (!mHealthy && mDirty) persistNow();
+        if (mHealthy && mRemoved.contains(target)) return Decision.REMOVE;
+        PackageState state = state(target.profile, target.packageName);
+        boolean storageChanged = false;
+        if (!exact && Boolean.TRUE.equals(external)) {
+            // Positive external metadata is useful even while PackageManager has not registered the activity yet.
+            storageChanged = state.external != 1;
+            state.external = 1;
+            if (uuid != null && !uuid.equals(state.installationUuid)) {
+                state.installationUuid = uuid;
+                state.publicVolumeUuid = "";
+                storageChanged = true;
+            }
+        }
+        if (exact) {
+            boolean changed = !Boolean.FALSE.equals(mItems.put(target, false));
+            if (external != null && state.external != (external ? 1 : 0)) {
+                state.external = external ? 1 : 0;
+                changed = true;
+            }
+            if (uuid != null && !Objects.equals(uuid, state.installationUuid)) {
+                state.installationUuid = uuid;
+                // An installation move invalidates any earlier public-volume association.
+                state.publicVolumeUuid = "";
+                changed = true;
+            }
+            if (volume != null && !Objects.equals(volume, state.publicVolumeUuid)) {
+                state.publicVolumeUuid = volume;
+                changed = true;
+            }
+            if (state.recovering && !hasRecovery(target.profile, target.packageName)) {
+                state.recovering = false;
+                changed = true;
+            }
+            if (changed) persist();
+            return Decision.AVAILABLE;
+        }
+        if (!mHealthy || !mItems.containsKey(target) || state.external != 0 || state.recovering
+                || Boolean.TRUE.equals(mItems.get(target))) {
+            if (!Boolean.TRUE.equals(mItems.put(target, true)) || storageChanged) persist();
+            return Decision.PRESERVE;
+        }
+        return Decision.NORMAL;
+    }
+
+    public synchronized void unavailable(long profile, String pkg) {
+        PackageState state = state(profile, pkg);
+        state.recovering = true;
+        mItems.replaceAll((target, recovering) ->
+                target.profile == profile && target.packageName.equals(pkg) || recovering);
+        persistNow();
+    }
+
+    /** The durable row snapshot precedes favorites deletion, so interruption cannot resurrect old rows after reinstall. */
+    public synchronized boolean removed(long profile, String pkg, List<Target> targets) {
+        return captureRemoval(profile, pkg, targets, true);
+    }
+
+    public synchronized boolean captureRemoval(long profile, String pkg, List<Target> targets, boolean allLayoutsCovered) {
+        if (!mHealthy && !persistNow()) return false;
+        for (Target target : targets) {
+            if (target.profile != profile || !target.packageName.equals(pkg)) {
+                throw new IllegalArgumentException("Removal snapshot crosses profile/package");
+            }
+        }
+        mRemoved.addAll(targets);
+        // Known older layouts also belong to the removed installation; defer their actual database edits until they load.
+        mItems.keySet().stream().filter(target -> target.profile == profile && target.packageName.equals(pkg)
+                && belongsToPendingRemoval(target)).forEach(mRemoved::add);
+        PackageState state = state(profile, pkg);
+        state.generation++;
+        state.recovering = false;
+        state.pendingRemoval = !allLayoutsCovered;
+        // Failed atomic commits disable destructive decisions in this process, including staged tombstones.
+        return persistNow();
+    }
+
+    public synchronized void added(long profile, String pkg) {
+        PackageState state = state(profile, pkg);
+        state.generation++;
+        state.external = -1;
+        state.recovering = false;
+        state.installationUuid = "";
+        state.publicVolumeUuid = "";
+        persistNow();
+    }
+
+    public synchronized void packageRemoved(long profile, String pkg) {
+        PackageState state = state(profile, pkg);
+        state.pendingRemoval = true;
+        state.removalGeneration = ++state.generation;
+        persistNow();
+    }
+
+    public synchronized boolean hasPendingRemoval(long profile, String pkg) {
+        return mHealthy && state(profile, pkg).pendingRemoval;
+    }
+
+    public synchronized List<Removal> pendingRemovals() {
+        if (!mHealthy && mDirty) persistNow();
+        if (!mHealthy) return Collections.emptyList();
+        return mPackages.entrySet().stream().filter(entry -> entry.getValue().pendingRemoval)
+                .map(entry -> new Removal(entry.getKey().profile, entry.getKey().name)).collect(Collectors.toList());
+    }
+
+    public synchronized boolean isRemoved(Target target) {
+        return mHealthy && mRemoved.contains(target);
+    }
+
+    /** Write-ahead insertion fence: interruption after this commit but before favorites insertion is harmless. */
+    public synchronized boolean created(Target target) {
+        PackageState state = state(target.profile, target.packageName);
+        boolean wasRemoved = mRemoved.contains(target);
+        boolean needsFence = state.pendingRemoval || wasRemoved;
+        mCreatedGenerations.put(target, state.generation);
+        mItems.put(target, true);
+        mRemoved.remove(target);
+        boolean durable = persistNow();
+        if (!durable && wasRemoved) mRemoved.add(target);
+        // If old durable removal authority could match this new row, refuse insertion unless its fence is durable too.
+        return durable || !needsFence;
+    }
+
+    public synchronized boolean belongsToPendingRemoval(Target target) {
+        PackageState state = state(target.profile, target.packageName);
+        return mHealthy && state.pendingRemoval
+                && mCreatedGenerations.getOrDefault(target, 0L) < state.removalGeneration;
+    }
+
+    /** Retire only after favorites proves a row absent; a crash between the two writes is idempotent. */
+    public synchronized void retireAbsent(String database, Set<Target> present) {
+        boolean changed = mRemoved.removeIf(target -> target.database.equals(database) && !present.contains(target));
+        changed |= mItems.keySet().removeIf(target -> target.database.equals(database) && !present.contains(target));
+        changed |= mCreatedGenerations.keySet().removeIf(target -> target.database.equals(database) && !present.contains(target));
+        if (changed) persist();
+    }
+
+    public synchronized boolean hasRecovery(long profile, String pkg) {
+        return mItems.entrySet().stream().anyMatch(entry -> entry.getKey().profile == profile
+                && entry.getKey().packageName.equals(pkg) && entry.getValue()
+                && !mRemoved.contains(entry.getKey()));
+    }
+
+    public synchronized String installationUuid(long profile, String pkg) {
+        return state(profile, pkg).installationUuid;
+    }
+
+    public synchronized String publicVolumeUuid(long profile, String pkg) {
+        return state(profile, pkg).publicVolumeUuid;
+    }
+
+    private PackageState state(long profile, String pkg) {
+        return mPackages.computeIfAbsent(new PackageKey(profile, pkg), key -> new PackageState());
+    }
+
+    private boolean persist() {
+        if (mBatchDepth > 0) {
+            mDirty = true;
+            return mHealthy;
+        }
+        return persistNow();
+    }
+
+    private boolean persistNow() {
+        try {
+            mPersistence.markUncertain();
+            mPersistence.write(encode());
+            mPersistence.clearUncertain();
+            mDirty = false;
+            mHealthy = true;
+            return true;
+        } catch (IOException | RuntimeException e) {
+            mHealthy = false;
+            mDirty = true;
+            // Retain current-process authoritative events, but never upgrade stale internal history after retry.
+            mPackages.values().forEach(state -> { if (state.external == 0) state.external = -1; });
+            return false;
+        }
+    }
+
+    private byte[] encode() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeInt(MAGIC);
+            out.writeInt(VERSION);
+            out.writeInt(mPackages.size());
+            for (var entry : mPackages.entrySet()) {
+                out.writeLong(entry.getKey().profile);
+                out.writeUTF(entry.getKey().name);
+                PackageState state = entry.getValue();
+                out.writeInt(state.external);
+                out.writeBoolean(state.recovering);
+                out.writeBoolean(state.pendingRemoval);
+                out.writeLong(state.generation);
+                out.writeLong(state.removalGeneration);
+                out.writeUTF(state.installationUuid);
+                out.writeUTF(state.publicVolumeUuid);
+            }
+            out.writeInt(mItems.size());
+            for (var entry : mItems.entrySet()) {
+                writeTarget(out, entry.getKey());
+                out.writeBoolean(entry.getValue());
+                out.writeLong(mCreatedGenerations.getOrDefault(entry.getKey(), 0L));
+            }
+            out.writeInt(mRemoved.size());
+            for (Target target : mRemoved) writeTarget(out, target);
+            CRC32 checksum = new CRC32();
+            checksum.update(bytes.toByteArray());
+            out.writeLong(checksum.getValue());
+        }
+        return bytes.toByteArray();
+    }
+
+    private void decode(byte[] bytes) throws IOException {
+        if (bytes.length < 16) throw new IOException("Truncated journal");
+        CRC32 checksum = new CRC32();
+        checksum.update(bytes, 0, bytes.length - Long.BYTES);
+        try (DataInputStream trailer = new DataInputStream(new ByteArrayInputStream(bytes, bytes.length - Long.BYTES, Long.BYTES))) {
+            if (trailer.readLong() != checksum.getValue()) throw new IOException("Corrupt journal checksum");
+        }
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes, 0, bytes.length - Long.BYTES))) {
+            if (in.readInt() != MAGIC || in.readInt() != VERSION) throw new IOException("Unknown journal format");
+            for (int count = readCount(in); count > 0; count--) {
+                PackageKey key = new PackageKey(in.readLong(), in.readUTF());
+                PackageState state = new PackageState();
+                state.external = in.readInt();
+                if (state.external < -1 || state.external > 1) throw new IOException("Invalid storage class");
+                state.recovering = in.readBoolean();
+                state.pendingRemoval = in.readBoolean();
+                state.generation = in.readLong();
+                state.removalGeneration = in.readLong();
+                state.installationUuid = in.readUTF();
+                state.publicVolumeUuid = in.readUTF();
+                mPackages.put(key, state);
+            }
+            for (int count = readCount(in); count > 0; count--) {
+                Target target = readTarget(in);
+                mItems.put(target, in.readBoolean());
+                mCreatedGenerations.put(target, in.readLong());
+            }
+            for (int count = readCount(in); count > 0; count--) mRemoved.add(readTarget(in));
+            if (in.read() != -1) throw new IOException("Trailing journal data");
+        }
+    }
+
+    private static int readCount(DataInputStream in) throws IOException {
+        int count = in.readInt();
+        if (count < 0 || count > MAX_ENTRIES) throw new IOException("Invalid journal count");
+        return count;
+    }
+
+    private static void writeTarget(DataOutputStream out, Target target) throws IOException {
+        out.writeUTF(target.database);
+        out.writeLong(target.id);
+        out.writeLong(target.profile);
+        out.writeUTF(target.packageName);
+        out.writeUTF(target.component);
+    }
+
+    private static Target readTarget(DataInputStream in) throws IOException {
+        return new Target(in.readUTF(), in.readLong(), in.readLong(), in.readUTF(), in.readUTF());
+    }
+}

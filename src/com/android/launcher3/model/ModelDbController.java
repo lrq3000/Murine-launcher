@@ -174,12 +174,36 @@ public class ModelDbController {
         return result;
     }
 
+    /** Identifies the actual workspace generation, not just its reusable filename or row IDs. */
+    @WorkerThread
+    public String getWorkspaceIdentity() {
+        createDbIfNotExists();
+        return mOpenHelper.getDatabaseName() + ":"
+                + mOpenHelper.getWorkspaceIdentity();
+    }
+
+    public File getWorkspaceDatabaseFile() {
+        createDbIfNotExists();
+        String name = mOpenHelper.getDatabaseName();
+        return name == null ? null : mContext.getDatabasePath(name);
+    }
+
+    private WorkspaceAvailability mWorkspaceAvailability;
+
+    void setWorkspaceAvailability(WorkspaceAvailability availability) {
+        mWorkspaceAvailability = availability;
+    }
+
     /**
      * Refer {@link SQLiteDatabase#insert(String, String, ContentValues)}
      */
     @WorkerThread
     public int insert(ContentValues initialValues) {
         createDbIfNotExists();
+        if (mWorkspaceAvailability != null && !mWorkspaceAvailability.beforeInsert(initialValues)) {
+            Log.e(TAG, "Shortcut insert rejected because its uninstall-generation fence was not durable");
+            return -1;
+        }
 
         SQLiteDatabase db = mOpenHelper.getWritableDatabase();
         addModifiedTime(initialValues);
@@ -347,6 +371,7 @@ public class ModelDbController {
     public void attemptMigrateDb(LauncherRestoreEventLogger restoreEventLogger,
             ModelDelegate modelDelegate) throws Exception {
         createDbIfNotExists();
+        if (mWorkspaceAvailability != null) mWorkspaceAvailability.reconcilePendingRemovals();
         if (shouldResetDb()) {
             resetLauncherDb(restoreEventLogger);
             return;
@@ -417,6 +442,7 @@ public class ModelDbController {
      */
     private boolean migrateGridIfNeeded(ModelDelegate modelDelegate) {
         createDbIfNotExists();
+        if (mWorkspaceAvailability != null) mWorkspaceAvailability.reconcilePendingRemovals();
         if (mPrefs.get(getEmptyDbCreatedKey())) {
             // If we have already create a new DB, ignore migration
             FileLog.d(TAG, "migrateGridIfNeeded: new DB already created, skipping migration");

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="workspace_item_save_failed">Impossibile salvare il collegamento. Riprovare quando lo spazio di archiviazione è disponibile.</string>
     <string name="pref_group_grid_size_title">Dimensione griglia</string>
     <string name="pref_group_grid_size_desc">Modifica il numero di righe e colonne</string>
     <string name="pref_group_icon_scale_title">Scala icone</string>

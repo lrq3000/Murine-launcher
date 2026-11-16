@@ -46,6 +46,8 @@ import com.android.launcher3.model.ShortcutsChangedTask
 import com.android.launcher3.model.UserLockStateChangedTask
 import com.android.launcher3.model.UserManagerState
 import com.android.launcher3.model.WorkspaceItemSpaceFinder
+import com.android.launcher3.model.WorkspaceAvailability
+import com.android.launcher3.model.ShortcutAvailabilityJournal.Decision
 import com.android.launcher3.model.data.ItemInfo
 import com.android.launcher3.model.data.WorkspaceItemInfo
 import com.android.launcher3.pm.UserCache
@@ -87,6 +89,7 @@ constructor(
     private val binderFactory: BaseLauncherBinderFactory,
     private val spaceFinderFactory: Provider<WorkspaceItemSpaceFinder>,
     val modelDbController: ModelDbController,
+    val workspaceAvailability: WorkspaceAvailability,
 ) {
 
     private val mCallbacksList = ArrayList<BgDataModel.Callbacks>(1)
@@ -117,9 +120,20 @@ constructor(
         private set
 
     // Runnable to check if the shortcuts permission has changed.
-    private val mDataValidationCheck = Runnable {
-        if (mModelLoaded) {
-            modelDelegate.validateData()
+    @Volatile private var mAvailabilityForeground = false
+    private val mDataValidationCheck = Runnable { runDataValidationCheck() }
+
+    private fun runDataValidationCheck() {
+        if (mModelDestroyed || !isModelLoaded()) return
+        modelDelegate.validateData()
+        revalidateWorkspaceAvailability()
+        if (mAvailabilityForeground && synchronized(mBgDataModel) {
+                mBgDataModel.itemsIdMap.any { it is WorkspaceItemInfo &&
+                    it.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && it.status == 0 &&
+                    (it.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0 }
+            }) {
+            // Registration can lag behind a mounted-volume broadcast; retries never authorize deletion.
+            MODEL_EXECUTOR.handler.postDelayed(mDataValidationCheck, 5_000L)
         }
     }
 
@@ -133,12 +147,27 @@ constructor(
 
     val bgDataModel: BgDataModel get() = mBgDataModel
 
-    fun newModelCallbacks() = ModelLauncherCallbacks(this::enqueueModelUpdateTask)
+    fun newModelCallbacks() = ModelLauncherCallbacks { task ->
+        if (task is PackageUpdatedTask) {
+            val generation = workspaceAvailability.bindGuard.snapshot()
+            task.recordAvailabilityEvent(workspaceAvailability)
+            if (!workspaceAvailability.bindGuard.isCurrent(generation)) forceReload()
+        }
+        enqueueModelUpdateTask(task)
+    }
 
     /** Adds the provided items to the workspace. */
     fun addAndBindAddedWorkspaceItems(itemList: List<Pair<ItemInfo?, Any?>?>) {
+        addAndBindAddedWorkspaceItems(itemList, Consumer { })
+    }
+
+    fun addAndBindAddedWorkspaceItems(itemList: List<Pair<ItemInfo?, Any?>?>, completion: Consumer<Boolean>) {
         callbacks.forEach { it.preAddApps() }
-        enqueueModelUpdateTask(AddWorkspaceItemsTask(itemList, spaceFinderFactory.get()))
+        MODEL_EXECUTOR.execute {
+            if (mModelDestroyed || !isModelLoaded()) completion.accept(false)
+            else AddWorkspaceItemsTask(itemList, spaceFinderFactory.get(), completion)
+                .execute(taskControllerProvider.get(), mBgDataModel, mBgAllAppsList)
+        }
     }
 
     fun getWriter(
@@ -167,6 +196,8 @@ constructor(
     /** Called when the model is destroyed */
     fun destroy() {
         mModelDestroyed = true
+        mAvailabilityForeground = false
+        MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.execute { modelDelegate.destroy() }
     }
 
@@ -395,8 +426,41 @@ constructor(
      * [UserCache]
      */
     fun validateModelDataOnResume() {
+        mAvailabilityForeground = true
+        requestAvailabilityRevalidation()
+    }
+
+    fun requestAvailabilityRevalidation() {
         MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.post(mDataValidationCheck)
+    }
+
+    fun onLauncherPaused() {
+        mAvailabilityForeground = false
+        MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
+    }
+
+    /** Recheck on foreground/storage hints without feeding recovered apps into the install queue. */
+    private fun revalidateWorkspaceAvailability() {
+        if (mModelDestroyed || !isModelLoaded()) return
+        val packages = HashSet<PackageUserKey>()
+        synchronized(mBgDataModel) {
+            mBgDataModel.itemsIdMap.forEach { item ->
+                if (item is WorkspaceItemInfo && item.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && item.status == 0 && !item.isArchived) {
+                    val decision = workspaceAvailability.evaluate(item)
+                    val unavailable = (item.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0
+                    if (decision == Decision.NORMAL || decision == Decision.REMOVE ||
+                        (decision == Decision.PRESERVE && !unavailable) ||
+                        (decision == Decision.AVAILABLE && unavailable)) {
+                        item.targetPackage?.let { packages.add(PackageUserKey(it, item.user)) }
+                    }
+                }
+            }
+        }
+        packages.forEach { key ->
+            PackageUpdatedTask(PackageUpdatedTask.OP_UPDATE, key.mUser, key.mPackageName)
+                .execute(taskControllerProvider.get(), mBgDataModel, mBgAllAppsList)
+        }
     }
 
     /** Called when the icons for packages have been updated in the icon cache. */
@@ -421,6 +485,9 @@ constructor(
             return
         }
         MODEL_EXECUTOR.execute {
+            if (task is PackageUpdatedTask) {
+                task.prepareAvailability(workspaceAvailability)
+            }
             if (!isModelLoaded()) {
                 // Loader has not yet run.
                 return@execute

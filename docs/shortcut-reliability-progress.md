@@ -1,5 +1,11 @@
 # Murine shortcut reliability ledger
 
+## Final API28 eight-test gate passed
+
+At clean committed `669054fdd09edfd3cf2e780272706ec157e115b7`, the normal incremental JDK21 app/test/JVM Gradle tasks exited0 with HEAD unchanged (6.1 seconds), all76 host assertions passed again, and the complete native Android instrumentation suite returned `OK (8 tests)`: eight passed, zero failures, zero skips. Effective installed debug app is1.3.1/code10301/minSdk26/targetSdk37. The only runtime continuation source change moves the real loader/recovery fixture onto its required model worker; no assertions or production behavior were weakened. `docs/shortcut-reliability-runtime-validation.md` is the authoritative exact-source/artifact/test/evidence/remaining-limits handoff, superseding earlier pending runtime and version statements below.
+
+The sole newly created emulator `agent-murine-shortcuts-e773138cd7fc` / index5 / native serial `emulator-5564` (API28) is verified stopped/released after final generation `c64b3020-fb54-4397-912d-0ba7042234d5`. Both original player PID45296/CreationDate and VM PID42228/CreationDate exited, native isrunning/list2 agree stopped, evidence is saved, ownership is null and reservations0. All other targets were preserved; all guest disk/log files remain. Final evidence: `C:/Users/33632/AppData/Local/Temp/opencode/launcher-reliability-runtime/murine-worker-final-669054f/`. The native suite gate is cleared, not the still-unexecuted full restore/migration/Soong/API29/Lenovo scenarios.
+
 ## Final Android runtime ownership and first run
 
 The coordinator's `eee37b482a6f61882d5c96f0ad9ce99f7e4ee082` (1.3.1 / 10301) and `dbb8587f1862273249ff7cb2e282ee00427f2f9d` (the actual missing ArrayList import build fix) are preserved. Coordinator app/test assembly plus the JVM task passed at the latter clean commit. A newly created independent LDPlayer `agent-murine-shortcuts-e773138cd7fc`, observed index5/serial `emulator-5564`, passed shared-lock RAM admission and native/ADB/API28 readiness, with local ADB enabled and root disabled. Indices0–4 and the physical WiFi target were not mutated.
@@ -8,7 +14,7 @@ The full eight-test suite at dbb8587f actually ran: seven passed, one failed, ze
 
 ## Independent review correction pass (base 8a67f078)
 
-The coordinator reviewed the branch as NOT merge-ready and supplied nine Important findings. This section supersedes earlier policy/scope rulings where they conflict with the original specification. One correction pass is authorized; no extra reviewers, subagents, device actions, pushes or heavy builds are authorized to this implementer. Offline cache misses do not establish online dependency unavailability; the coordinator owns the scheduled online Android build.
+The coordinator reviewed the branch as NOT merge-ready and supplied nine Important findings. This historical source-correction section supersedes earlier policy/scope rulings where they conflict with the original specification. At that stage, one correction pass was authorized without extra reviewers, subagents, device actions, pushes or heavy builds. The subsequent explicit runtime authorization and verified execution are recorded above; extra reviewers/agents, physical-device operations, pushes, merges and deletions remained prohibited. Offline cache misses did not establish online dependency unavailability.
 
 Correction sequence: (6,7) restore historical internal policy with explicit durable uncertainty and recoverable store health; (8,9,4) stable ingress identities and independently reconstructed disabled/appearance state; (1,5) restore incarnations and all-layout/migration removal authority; (2) database commit versus insertion/model/UI/queue consumers; (3) authoritative removal versus queued and deferred binding. Every finding will have a disposition and executed-versus-unexecuted test evidence in the final report.
 

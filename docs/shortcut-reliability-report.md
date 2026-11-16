@@ -1,5 +1,7 @@
 # Murine shortcut reliability implementation report
 
+**Final runtime handoff:** `docs/shortcut-reliability-runtime-validation.md` records actual clean-source app/test compilation and all eight added Android tests GREEN on API28 at669054fd, with exact artifacts, version1.3.1/code10301 and verified emulator shutdown. The historical compilation/runtime blockers below do not describe the final tested source. API29/Lenovo, complete restore/migration, inherited Soong tests and publication readiness remain unverified.
+
 **Historical implementation report for 8a67f078; superseded by `docs/shortcut-reliability-review-corrections.md`.** Independent review rejected the current-process internal-policy deviation, never-loaded-layout exemption, insertion failure handling and other correctness gaps. They are not accepted scope exclusions. The coordinator subsequently resolved AGP9.4.1 online, installed SDK37.2/build-tools37.0.0 through Gradle and built app/test APKs successfully in 683 seconds. That build overlapped corrections and does not validate the final tip. API28 instrumentation of that observed snapshot passed three of six tests; the exact failures, scoped test-runtime corrections and remaining final-build/runtime gates are recorded in the correction report. Earlier offline-cache and missing-SDK observations below are historical, not current build blockers.
 
 ## Delivery status

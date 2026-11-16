@@ -19,9 +19,31 @@ import java.io.IOException;
 /** AtomicFile is available before API 29 and recovers an interrupted commit from its backup. */
 final class AtomicAvailabilityPersistence implements ShortcutAvailabilityJournal.Persistence {
     private final AtomicFile mFile;
+    private final File mUncertain;
 
     AtomicAvailabilityPersistence(File file) {
         mFile = new AtomicFile(file);
+        mUncertain = new File(file + ".uncertain");
+    }
+
+    @Override
+    public boolean isUncertain() { return mUncertain.exists(); }
+
+    @Override
+    public void markUncertain() throws IOException {
+        try (FileOutputStream stream = new FileOutputStream(mUncertain)) {
+            stream.write(1);
+            stream.getFD().sync();
+        } catch (IOException e) {
+            // If even the latch cannot be written, invalidate older authority rather than silently reuse it on restart.
+            mFile.delete();
+            throw e;
+        }
+    }
+
+    @Override
+    public void clearUncertain() throws IOException {
+        if (mUncertain.exists() && !mUncertain.delete()) throw new IOException("Cannot clear journal uncertainty latch");
     }
 
     @Override

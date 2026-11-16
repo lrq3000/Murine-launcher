@@ -30,6 +30,9 @@ public final class ShortcutAvailabilityJournal {
     public interface Persistence {
         byte[] read() throws IOException;
         void write(byte[] bytes) throws IOException;
+        default boolean isUncertain() throws IOException { return false; }
+        default void markUncertain() throws IOException { }
+        default void clearUncertain() throws IOException { }
     }
     public record Target(String database, long id, long profile, String packageName, String component) { }
     public record Removal(long profile, String packageName) { }
@@ -52,8 +55,6 @@ public final class ShortcutAvailabilityJournal {
     private final Map<Target, Boolean> mItems = new HashMap<>();
     private final Map<Target, Long> mCreatedGenerations = new HashMap<>();
     private final Set<Target> mRemoved = new HashSet<>();
-    // A valid older file may predate a failed unavailable-event write. Historical "internal" classification alone cannot authorize deletion after restart.
-    private final Set<Target> mCurrentInternalTargets = new HashSet<>();
     private boolean mHealthy = true;
     private int mBatchDepth;
     private boolean mDirty;
@@ -72,6 +73,13 @@ public final class ShortcutAvailabilityJournal {
         try {
             byte[] bytes = persistence.read();
             if (bytes != null) decode(bytes);
+            if (persistence.isUncertain()) {
+                // The previous process could not finish a write. Do not treat the older valid file as current authority.
+                mPackages.values().forEach(state -> { state.external = -1; state.recovering = true; state.pendingRemoval = false; });
+                mRemoved.clear();
+                mHealthy = false;
+                mDirty = true;
+            }
         } catch (IOException | RuntimeException e) {
             // Never trust a partially decoded removal list or internal classification.
             mPackages.clear();
@@ -99,8 +107,6 @@ public final class ShortcutAvailabilityJournal {
             }
         }
         if (exact) {
-            if (Boolean.FALSE.equals(external)) mCurrentInternalTargets.add(target);
-            else mCurrentInternalTargets.remove(target);
             boolean changed = !Boolean.FALSE.equals(mItems.put(target, false));
             if (external != null && state.external != (external ? 1 : 0)) {
                 state.external = external ? 1 : 0;
@@ -123,7 +129,7 @@ public final class ShortcutAvailabilityJournal {
             if (changed) persist();
             return Decision.AVAILABLE;
         }
-        if (!mHealthy || !mCurrentInternalTargets.contains(target) || !mItems.containsKey(target) || state.external != 0 || state.recovering
+        if (!mHealthy || !mItems.containsKey(target) || state.external != 0 || state.recovering
                 || Boolean.TRUE.equals(mItems.get(target))) {
             if (!Boolean.TRUE.equals(mItems.put(target, true)) || storageChanged) persist();
             return Decision.PRESERVE;
@@ -141,7 +147,7 @@ public final class ShortcutAvailabilityJournal {
 
     /** The durable row snapshot precedes favorites deletion, so interruption cannot resurrect old rows after reinstall. */
     public synchronized boolean removed(long profile, String pkg, List<Target> targets) {
-        if (!mHealthy) return false;
+        if (!mHealthy && !persistNow()) return false;
         for (Target target : targets) {
             if (target.profile != profile || !target.packageName.equals(pkg)) {
                 throw new IllegalArgumentException("Removal snapshot crosses profile/package");
@@ -160,7 +166,6 @@ public final class ShortcutAvailabilityJournal {
     }
 
     public synchronized void added(long profile, String pkg) {
-        mCurrentInternalTargets.removeIf(target -> target.profile == profile && target.packageName.equals(pkg));
         PackageState state = state(profile, pkg);
         state.generation++;
         state.external = -1;
@@ -182,6 +187,7 @@ public final class ShortcutAvailabilityJournal {
     }
 
     public synchronized List<Removal> pendingRemovals() {
+        if (!mHealthy && mDirty) persistNow();
         if (!mHealthy) return Collections.emptyList();
         return mPackages.entrySet().stream().filter(entry -> entry.getValue().pendingRemoval)
                 .map(entry -> new Removal(entry.getKey().profile, entry.getKey().name)).collect(Collectors.toList());
@@ -247,11 +253,17 @@ public final class ShortcutAvailabilityJournal {
 
     private boolean persistNow() {
         try {
+            mPersistence.markUncertain();
             mPersistence.write(encode());
+            mPersistence.clearUncertain();
             mDirty = false;
-            return mHealthy;
+            mHealthy = true;
+            return true;
         } catch (IOException | RuntimeException e) {
             mHealthy = false;
+            mDirty = true;
+            // Retain current-process authoritative events, but never upgrade stale internal history after retry.
+            mPackages.values().forEach(state -> { if (state.external == 0) state.external = -1; });
             return false;
         }
     }

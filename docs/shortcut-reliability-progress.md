@@ -1,5 +1,13 @@
 # Murine shortcut reliability ledger
 
+## Independent review correction pass (base 8a67f078)
+
+The coordinator reviewed the branch as NOT merge-ready and supplied nine Important findings. This section supersedes earlier policy/scope rulings where they conflict with the original specification. One correction pass is authorized; no extra reviewers, subagents, device actions, pushes or heavy builds are authorized to this implementer. Offline cache misses do not establish online dependency unavailability; the coordinator owns the scheduled online Android build.
+
+Correction sequence: (6,7) restore historical internal policy with explicit durable uncertainty and recoverable store health; (8,9,4) stable ingress identities and independently reconstructed disabled/appearance state; (1,5) restore incarnations and all-layout/migration removal authority; (2) database commit versus insertion/model/UI/queue consumers; (3) authoritative removal versus queued and deferred binding. Every finding will have a disposition and executed-versus-unexecuted test evidence in the final report.
+
+Findings 6 and 7 verified against production: current-process-only internal proof was an unauthorized policy deviation and mHealthy never recovered after an error. Added `ShortcutReviewRegressionTest`: witnessed RED for reopened known-internal policy (`expected NORMAL, got PRESERVE`) and fresh removal after corrupt storage (`expected true, got false`). GREEN: original 42 assertions plus review regression cases 6 and 7. Healthy durable internal history now retains NORMAL behavior; a separate fsynced uncertainty latch distinguishes an interrupted/failed write from ordinary restart. A fresh successful snapshot restores health without turning uncertainty-downgraded internal history into removal authority; new authoritative removal works in the same process. Runtime Android AtomicFile fault injection remains unexecuted.
+
 Plan: `C:/git/android-launchers-shortcuts-fix/docs/superpowers/plans/2026-11-16-shortcut-reliability.md`; specification: adjacent `docs/brainstorm/android-launchers-shortcuts-fix_HANDOFF_STANDALONE_EN.md` in the coordinator workspace.
 
 ## Scope and baseline

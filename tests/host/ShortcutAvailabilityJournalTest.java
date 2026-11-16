@@ -19,6 +19,10 @@ public final class ShortcutAvailabilityJournalTest {
         byte[] bytes;
         boolean fail;
         boolean unreadable;
+        boolean uncertain;
+        public boolean isUncertain() { return uncertain; }
+        public void markUncertain() { uncertain = true; }
+        public void clearUncertain() { uncertain = false; }
         public byte[] read() throws IOException {
             if (unreadable) throw new IOException("journal unreadable");
             return bytes;

@@ -14,6 +14,8 @@ import java.util.UUID;
 
 /** Additive, idempotent metadata: no favorites migration, schema-version bump or destructive fallback. */
 final class WorkspaceDatabaseIdentity {
+    private static final java.util.concurrent.atomic.AtomicLong EPOCH = new java.util.concurrent.atomic.AtomicLong();
+    static long epoch() { return EPOCH.get(); }
     private static final String TABLE = "shortcut_availability_identity";
 
     static String get(SQLiteDatabase db) {
@@ -27,5 +29,6 @@ final class WorkspaceDatabaseIdentity {
 
     static void reset(SQLiteDatabase db) {
         db.execSQL("DROP TABLE IF EXISTS " + TABLE);
+        EPOCH.incrementAndGet();
     }
 }

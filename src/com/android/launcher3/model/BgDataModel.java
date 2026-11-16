@@ -416,6 +416,7 @@ public class BgDataModel {
         }
 
         default void bindItems(@NonNull List<ItemInfo> shortcuts, boolean forceAnimateIcons) { }
+        default void bindItemInsertFailed() { }
         /** Alternate method to bind preinflated views */
         default void bindInflatedItems(@NonNull List<Pair<ItemInfo, View>> items) { }
 

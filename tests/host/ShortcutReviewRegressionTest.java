@@ -7,6 +7,7 @@ import java.util.Collections;
 
 /** Review regressions exercise the production journal and its durable-storage boundary. */
 public final class ShortcutReviewRegressionTest {
+    private static int checks;
     static final class Disk implements ShortcutAvailabilityJournal.Persistence {
         byte[] bytes;
         boolean fail;
@@ -22,12 +23,13 @@ public final class ShortcutReviewRegressionTest {
     }
     private static final ShortcutAvailabilityJournal.Target ROW = new ShortcutAvailabilityJournal.Target("db", 42, 301, "pkg", "pkg/.Main");
     private static void check(Object expected, Object actual) {
+        checks++;
         if (!expected.equals(actual)) throw new AssertionError("expected " + expected + ", got " + actual);
     }
     public static void main(String[] args) {
         if (args.length == 0 || args[0].equals("6")) knownInternalRestartAndFailedRecovery();
         if (args.length == 0 || args[0].equals("7")) freshRemovalAfterCorruptOrFailedStore();
-        System.out.println("PASS review journal regressions " + (args.length == 0 ? "6,7" : args[0]));
+        System.out.println("PASS " + checks + " review journal assertions (findings " + (args.length == 0 ? "6,7" : args[0]) + ")");
     }
     private static void knownInternalRestartAndFailedRecovery() {
         Disk disk = new Disk();
@@ -58,6 +60,8 @@ public final class ShortcutReviewRegressionTest {
         transientDisk.fail = true;
         transientJournal.unavailable(301, "pkg");
         transientDisk.fail = false;
+        transientJournal.evaluate(ROW, false, null, null, null);
+        check(false, transientDisk.uncertain); // An unchanged availability retry still retries a previously failed write.
         transientJournal.packageRemoved(301, "pkg");
         check(true, transientJournal.hasPendingRemoval(301, "pkg"));
         check(true, transientJournal.removed(301, "pkg", Collections.singletonList(ROW)));

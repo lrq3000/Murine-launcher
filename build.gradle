@@ -356,9 +356,8 @@ dependencies {
 
     testImplementation libs.junit
     androidTestImplementation libs.junit
-    androidTestImplementation libs.mockito.core
-    androidTestImplementation libs.dexmaker
-    androidTestImplementation libs.dexmaker.mockito
+    // Keep the Android MockMaker matched to Mockito core; the inherited Dexmaker 1.2 plugin implements Mockito 1.x.
+    androidTestImplementation libs.mockito.android
     androidTestImplementation libs.runner
     androidTestImplementation libs.rules
     androidTestImplementation libs.uiautomator.v18

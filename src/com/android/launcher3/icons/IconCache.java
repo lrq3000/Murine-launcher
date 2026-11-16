@@ -195,7 +195,15 @@ public class IconCache extends BaseIconCache {
         Supplier<ItemInfoWithIcon> task;
         if (info instanceof AppInfo || info instanceof WorkspaceItemInfo) {
             task = () -> {
-                getTitleAndIcon(info, DEFAULT_LOOKUP_FLAG);
+                if (info instanceof WorkspaceItemInfo workspace
+                        && workspace.itemType == com.android.launcher3.LauncherSettings.Favorites.ITEM_TYPE_APPLICATION
+                        && workspace.status == 0 && !workspace.isArchived()
+                        && (workspace.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0) {
+                    com.android.launcher3.LauncherAppState.getInstance(context).getModel()
+                            .getWorkspaceAvailability().hydrateUnavailable(workspace);
+                } else {
+                    getTitleAndIcon(info, DEFAULT_LOOKUP_FLAG);
+                }
                 return info;
             };
         } else if (info instanceof PackageItemInfo pii) {

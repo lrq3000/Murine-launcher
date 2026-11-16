@@ -148,14 +148,26 @@ constructor(
     val bgDataModel: BgDataModel get() = mBgDataModel
 
     fun newModelCallbacks() = ModelLauncherCallbacks { task ->
-        if (task is PackageUpdatedTask) task.recordAvailabilityEvent(workspaceAvailability)
+        if (task is PackageUpdatedTask) {
+            val generation = workspaceAvailability.bindGuard.snapshot()
+            task.recordAvailabilityEvent(workspaceAvailability)
+            if (!workspaceAvailability.bindGuard.isCurrent(generation)) forceReload()
+        }
         enqueueModelUpdateTask(task)
     }
 
     /** Adds the provided items to the workspace. */
     fun addAndBindAddedWorkspaceItems(itemList: List<Pair<ItemInfo?, Any?>?>) {
+        addAndBindAddedWorkspaceItems(itemList, Consumer { })
+    }
+
+    fun addAndBindAddedWorkspaceItems(itemList: List<Pair<ItemInfo?, Any?>?>, completion: Consumer<Boolean>) {
         callbacks.forEach { it.preAddApps() }
-        enqueueModelUpdateTask(AddWorkspaceItemsTask(itemList, spaceFinderFactory.get()))
+        MODEL_EXECUTOR.execute {
+            if (mModelDestroyed || !isModelLoaded()) completion.accept(false)
+            else AddWorkspaceItemsTask(itemList, spaceFinderFactory.get(), completion)
+                .execute(taskControllerProvider.get(), mBgDataModel, mBgAllAppsList)
+        }
     }
 
     fun getWriter(

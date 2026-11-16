@@ -60,6 +60,43 @@ class AddWorkspaceItemsTaskTest : AbstractWorkspaceModelTest() {
     }
 
     @Test
+    fun rejectedFenceDoesNotPublishAnItemThroughRealWriterAndTask() {
+        setupWorkspaces(listOf(0))
+        val item = getNewItem()
+        givenNewItemSpaces(NewItemSpace(1, 0, 0))
+        val original = mModelHelper.model.workspaceAvailability
+        val database = mModelHelper.model.modelDbController
+        var fail = false
+        var bytes: ByteArray? = null
+        val disk = object : ShortcutAvailabilityJournal.Persistence {
+            override fun read() = bytes
+            override fun write(value: ByteArray) {
+                if (fail) throw java.io.IOException("injected fence write failure")
+                bytes = value.copyOf()
+            }
+        }
+        val availability = WorkspaceAvailability(mTargetContext, database,
+            com.android.launcher3.pm.UserCache.INSTANCE.get(mTargetContext), disk)
+        try {
+            availability.recordEvent(PackageUpdatedTask.OP_REMOVE, item.user, arrayOf(item.targetPackage))
+            fail = true
+            var committed = true
+            val task = AddWorkspaceItemsTask(listOf(Pair.create<ItemInfo, Any>(item, Any())), mWorkspaceItemSpaceFinder) { committed = it }
+            runOnExecutorSync(Executors.MODEL_EXECUTOR) {
+                mDataModelCallbacks.addedItems.clear()
+                mModelHelper.model.enqueueModelUpdateTask(task)
+                assertThat(committed).isFalse()
+                assertThat(item.id).isEqualTo(ItemInfo.NO_ID)
+                assertThat(mModelHelper.model.bgDataModel.itemsIdMap.any { it === item }).isFalse()
+                runOnExecutorSync(Executors.MAIN_EXECUTOR) { }
+                assertThat(mDataModelCallbacks.addedItems).isEmpty()
+            }
+        } finally {
+            database.setWorkspaceAvailability(original)
+        }
+    }
+
+    @Test
     fun givenNewItemAndNonEmptyPages_whenExecuteTask_thenAddNewItem() {
         val itemToAdd = getNewItem()
         val nonEmptyScreenIds = listOf(0, 1, 2)

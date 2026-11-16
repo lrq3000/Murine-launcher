@@ -21,3 +21,15 @@ print(f"Generated classes retained at {output}", flush=True)
 subprocess.run([javac, "-d", str(output), str(root / "src/com/android/launcher3/model/ShortcutAvailabilityJournal.java"), str(root / "tests/host/ShortcutAvailabilityJournalTest.java"), str(root / "tests/host/ShortcutReviewRegressionTest.java")], check=True)
 subprocess.run([java, "-ea", "-cp", str(output), "com.android.launcher3.model.ShortcutAvailabilityJournalTest"], check=True)
 subprocess.run([java, "-ea", "-cp", str(output), "com.android.launcher3.model.ShortcutReviewRegressionTest"], check=True)
+sqlite_jars = list((Path.home() / ".gradle/caches/modules-2/files-2.1/org.xerial/sqlite-jdbc").glob("**/sqlite-jdbc-*.jar"))
+sqlite_jar = os.environ.get("SQLITE_JDBC_JAR")
+if sqlite_jar is None and not sqlite_jars:
+    raise SystemExit("SQLite integration requires SQLITE_JDBC_JAR or a cached org.xerial:sqlite-jdbc jar")
+if sqlite_jar is None:
+    sqlite_jar = str(sqlite_jars[0])
+sources = [root / "src/com/android/launcher3/model/WorkspaceDatabaseIdentity.java", root / "src/com/android/launcher3/model/WorkspaceLayoutStore.java", root / "tests/host/WorkspaceLayoutStoreIntegrationTest.java", *list((root / "tests/host/sqlite").glob("**/*.java"))]
+subprocess.run([javac, "-cp", str(output) + os.pathsep + sqlite_jar, "-d", str(output), *map(str, sources)], check=True)
+subprocess.run([java, "-Djava.io.tmpdir=" + str(output), "-ea", "-cp", str(output) + os.pathsep + sqlite_jar, "com.android.launcher3.model.WorkspaceLayoutStoreIntegrationTest", str(output)], check=True)
+delivery_sources = [root / "src/com/android/launcher3/model/WorkspaceInsertCommit.java", root / "src/com/android/launcher3/model/WorkspaceBindGuard.java", root / "tests/host/WorkspaceDeliveryRegressionTest.java"]
+subprocess.run([javac, "-d", str(output), *map(str, delivery_sources)], check=True)
+subprocess.run([java, "-ea", "-cp", str(output), "com.android.launcher3.model.WorkspaceDeliveryRegressionTest"], check=True)

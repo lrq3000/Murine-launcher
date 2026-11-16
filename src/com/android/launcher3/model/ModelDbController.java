@@ -182,6 +182,12 @@ public class ModelDbController {
                 + mOpenHelper.getWorkspaceIdentity();
     }
 
+    public File getWorkspaceDatabaseFile() {
+        createDbIfNotExists();
+        String name = mOpenHelper.getDatabaseName();
+        return name == null ? null : mContext.getDatabasePath(name);
+    }
+
     private WorkspaceAvailability mWorkspaceAvailability;
 
     void setWorkspaceAvailability(WorkspaceAvailability availability) {
@@ -195,7 +201,7 @@ public class ModelDbController {
     public int insert(ContentValues initialValues) {
         createDbIfNotExists();
         if (mWorkspaceAvailability != null && !mWorkspaceAvailability.beforeInsert(initialValues)) {
-            Log.e(TAG, "New shortcut deferred because its uninstall-generation fence could not be persisted");
+            Log.e(TAG, "Shortcut insert rejected because its uninstall-generation fence was not durable");
             return -1;
         }
 
@@ -365,6 +371,7 @@ public class ModelDbController {
     public void attemptMigrateDb(LauncherRestoreEventLogger restoreEventLogger,
             ModelDelegate modelDelegate) throws Exception {
         createDbIfNotExists();
+        if (mWorkspaceAvailability != null) mWorkspaceAvailability.reconcilePendingRemovals();
         if (shouldResetDb()) {
             resetLauncherDb(restoreEventLogger);
             return;
@@ -435,6 +442,7 @@ public class ModelDbController {
      */
     private boolean migrateGridIfNeeded(ModelDelegate modelDelegate) {
         createDbIfNotExists();
+        if (mWorkspaceAvailability != null) mWorkspaceAvailability.reconcilePendingRemovals();
         if (mPrefs.get(getEmptyDbCreatedKey())) {
             // If we have already create a new DB, ignore migration
             FileLog.d(TAG, "migrateGridIfNeeded: new DB already created, skipping migration");

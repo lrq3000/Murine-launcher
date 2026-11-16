@@ -63,6 +63,7 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
 
     @NonNull
     private final WorkspaceItemSpaceFinder mItemSpaceFinder;
+    private final java.util.function.Consumer<Boolean> mCompletion;
 
     /**
      * @param itemList items to add on the workspace
@@ -70,17 +71,35 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
      */
     public AddWorkspaceItemsTask(@NonNull final List<Pair<ItemInfo, Object>> itemList,
             @NonNull final WorkspaceItemSpaceFinder itemSpaceFinder) {
+        this(itemList, itemSpaceFinder, success -> { });
+    }
+
+    public AddWorkspaceItemsTask(@NonNull final List<Pair<ItemInfo, Object>> itemList,
+            @NonNull final WorkspaceItemSpaceFinder itemSpaceFinder, java.util.function.Consumer<Boolean> completion) {
         mItemList = itemList;
         mItemSpaceFinder = itemSpaceFinder;
+        mCompletion = completion;
     }
 
 
     @Override
     public void execute(@NonNull ModelTaskController taskController, @NonNull BgDataModel dataModel,
             @NonNull AllAppsList apps) {
-        if (mItemList.isEmpty()) {
-            return;
+        final boolean success;
+        try {
+            success = executeAndReport(taskController, dataModel, apps);
+        } catch (RuntimeException e) {
+            mCompletion.accept(false);
+            throw e;
         }
+        mCompletion.accept(success);
+    }
+
+    private boolean executeAndReport(ModelTaskController taskController, BgDataModel dataModel, AllAppsList apps) {
+        if (mItemList.isEmpty()) {
+            return true;
+        }
+        boolean success = true;
 
         final ArrayList<ItemInfo> addedItemsFinal = new ArrayList<>();
         final IntArray addedWorkspaceScreensFinal = new IntArray();
@@ -194,9 +213,12 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
                 }
 
                 // Add the shortcut to the db
-                taskController.getModelWriter().addItemToDatabase(itemInfo,
+                if (!taskController.getModelWriter().addItemToDatabaseOnModelThread(itemInfo,
                         LauncherSettings.Favorites.CONTAINER_DESKTOP, screenId,
-                        coords[1], coords[2]);
+                        coords[1], coords[2])) {
+                    success = false;
+                    continue;
+                }
 
                 // Save the WorkspaceItemInfo for binding in the workspace
                 addedItemsFinal.add(itemInfo);
@@ -228,6 +250,7 @@ public class AddWorkspaceItemsTask implements ModelUpdateTask {
                 }
             });
         }
+        return success;
     }
 
     /**

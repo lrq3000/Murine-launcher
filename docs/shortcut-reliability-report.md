@@ -1,5 +1,7 @@
 # Murine shortcut reliability implementation report
 
+**Historical implementation report for 8a67f078; superseded by `docs/shortcut-reliability-review-corrections.md`.** Independent review rejected the current-process internal-policy deviation, never-loaded-layout exemption, insertion failure handling and other correctness gaps. They are not accepted scope exclusions. The coordinator subsequently resolved AGP9.4.1 online, installed SDK37.2/build-tools37.0.0 through Gradle and built app/test APKs successfully in 683 seconds. That build overlapped corrections and does not validate the final tip. API28 instrumentation of that observed snapshot passed three of six tests; the exact failures, scoped test-runtime corrections and remaining final-build/runtime gates are recorded in the correction report. Earlier offline-cache and missing-SDK observations below are historical, not current build blockers.
+
 ## Delivery status
 
 The Murine implementation is independent of AOSP/Lawnchair and confined to this feature worktree. It is integrated code, not a downstream wrapper or disconnected policy prototype. Host policy/codec tests pass; full Android compilation and model/UI acceptance remain blocked and must precede publication.
@@ -29,7 +31,7 @@ JDK21 javac compiled the production journal, AtomicFile adapter and SQLite ident
 
 `git diff --check` passed. No device/emulator was accessed. Generated `.class` directories are retained under `C:/Users/33632/AppData/Local/Temp/opencode/murine-shortcut-tests-*` for manual cleanup.
 
-### Blocked / not executed
+### Initial blocked / unexecuted checks (superseded where noted above)
 
 The original deletion behavior was traced in the actual loader, postboot and update code but was not dynamically reproduced in the canonical model harness. The initial candidate Gradle unit-test command failed before compilation because AGP9.4.1 is not cached. The inherited processor tests are actually included by `tests/Android.bp` in `Launcher3RoboTests` / `Launcher3Tests`, not by the standalone Gradle unit-test source set. An AOSP platform build tree and its test dependencies are absent here.
 
@@ -39,7 +41,7 @@ The actual debug build command `gradle --offline --console=plain --quiet --max-w
 
 ## Coordinator commands and prerequisites
 
-Use JDK21 and Gradle9.7.1, as declared by current main. The supplied installation is `C:/Users/33632/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1/bin/gradle.bat`; JAVA_HOME and ANDROID_HOME were set only within each command process. The checkout has wrapper properties but no wrapper launcher scripts. Supply AGP9.4.1, compileSdk37.2 and the declared Maven/JitPack dependencies/framework stubs through the coordinator's approved environment before building. Do not lower upstream SDK/minSdk to conceal missing prerequisites.
+Use JDK21 and Gradle9.7.1, as declared by current main. The supplied installation is `C:/Users/33632/.gradle/wrapper/dists/gradle-9.7.1-bin/1w1c7tv4s851m17nbqdsro2tv/gradle-9.7.1/bin/gradle.bat`; JAVA_HOME and ANDROID_HOME were set only within each command process. The checkout has wrapper properties but no wrapper launcher scripts. The coordinator's successful online build has now supplied AGP9.4.1, compileSdk37.2 and the normal declared dependency artifacts. No upstream SDK/minSdk downgrade was needed. The final corrected tip still requires the coordinator's normal incremental app/test build and runtime suite.
 
 Build: `gradle --console=plain --quiet --max-workers=1 assembleAospWithoutQuickstepDebug`.
 

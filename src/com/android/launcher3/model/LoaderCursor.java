@@ -89,6 +89,7 @@ public class LoaderCursor extends CursorWrapper {
 
     private final Context mContext;
     private final LauncherModel mModel;
+    private final WorkspaceAvailability mAvailability;
     private final PackageManagerHelper mPmHelper;
     private final IconCache mIconCache;
     private final InvariantDeviceProfile mIDP;
@@ -144,12 +145,14 @@ public class LoaderCursor extends CursorWrapper {
             IconCache iconCache,
             InvariantDeviceProfile idp,
             LauncherModel model,
-            PackageManagerHelper pmHelper) {
+            PackageManagerHelper pmHelper,
+            WorkspaceAvailability availability) {
         super(cursor);
         mContext = context;
         mIconCache = iconCache;
         mIDP = idp;
         mModel = model;
+        mAvailability = availability;
         mPmHelper = pmHelper;
 
         allUsers = userManagerState.allUsers;
@@ -207,7 +210,7 @@ public class LoaderCursor extends CursorWrapper {
     }
 
     public ShortcutAvailabilityJournal.Decision getAvailabilityDecision(Intent intent) {
-        WorkspaceAvailability availability = mModel.getWorkspaceAvailability();
+        WorkspaceAvailability availability = mAvailability;
         ShortcutAvailabilityJournal.Decision decision = availability.evaluate(id, serialNumber, intent, user);
         if (decision == ShortcutAvailabilityJournal.Decision.NORMAL && !Utilities.isBootCompleted()
                 && intent.getComponent() != null) {
@@ -250,6 +253,7 @@ public class LoaderCursor extends CursorWrapper {
         }
         if (TextUtils.isEmpty(info.title)) info.title = intent.getComponent().getClassName();
         info.contentDescription = mIconCache.getUserBadgedLabel(info.title, user);
+        mAvailability.populateRuntimeFlags(info);
         return info;
     }
 

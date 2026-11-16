@@ -243,24 +243,48 @@ public class ModelWriter {
         updateItemInfoProps(item, container, screenId, cellX, cellY);
 
         item.id = mModel.getModelDbController().generateNewItemId();
-        notifyOtherCallbacks(c -> c.bindItems(Collections.singletonList(item), false));
+        newModelTask(() -> insertAndPublish(item)).executeOnModelThread();
+    }
 
+    /** The install task already owns MODEL_EXECUTOR and must know the commit result before binding or acknowledging its queue. */
+    public boolean addItemToDatabaseOnModelThread(ItemInfo item, int container, int screenId, int cellX, int cellY) {
+        com.android.launcher3.util.Preconditions.assertWorkerThread();
+        updateItemInfoProps(item, container, screenId, cellX, cellY);
+        item.id = mModel.getModelDbController().generateNewItemId();
+        return insertAndPublish(item);
+    }
+
+    private boolean insertAndPublish(ItemInfo item) {
+        final int assignedId = item.id;
         ModelVerifier verifier = new ModelVerifier();
         final StackTraceElement[] stackTrace = new Throwable().getStackTrace();
-        newModelTask(() -> {
-            // Write the item on background thread, as some properties might have been updated in
-            // the background.
-            final ContentWriter writer = new ContentWriter(mContext);
-            item.onAddToDatabase(writer);
-            writer.put(Favorites._ID, item.id);
-
-            mModel.getModelDbController().insert(writer.getValues(mContext));
+        return WorkspaceInsertCommit.execute(() -> {
+            try {
+                ContentWriter writer = new ContentWriter(mContext);
+                item.onAddToDatabase(writer);
+                writer.put(Favorites._ID, assignedId);
+                return mModel.getModelDbController().insert(writer.getValues(mContext));
+            } catch (RuntimeException e) {
+                Log.e(TAG, "Shortcut insertion failed", e);
+                return -1;
+            }
+        }, () -> {
             synchronized (mBgDataModel) {
                 checkItemInfoLocked(item.id, item, stackTrace);
                 mBgDataModel.addItem(mContext, item, true);
                 verifier.verifyModel();
             }
-        }).executeOnModelThread();
+            notifyOtherCallbacks(c -> c.bindItems(Collections.singletonList(item), false));
+        }, () -> {
+            item.id = ItemInfo.NO_ID;
+            mUiExecutor.execute(() -> {
+                for (Callbacks callback : mModel.getCallbacks()) {
+                    callback.bindWorkspaceComponentsRemoved(candidate -> candidate == item || candidate.id == assignedId);
+                    callback.bindItemInsertFailed();
+                }
+                mModel.forceReload(); // Roll back the owner's optimistic placement as well as other callbacks.
+            });
+        });
     }
 
     /**

@@ -54,7 +54,8 @@ public class ShortcutAvailabilityStorageTest {
         assertEquals(Integer.valueOf(4), result.getAsInteger(Favorites.RANK));
         assertEquals(flags, item.runtimeStatusFlags);
         item.runtimeStatusFlags &= ~WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
-        item.bitmap = null;
+        // ItemInfoWithIcon guarantees a non-null BitmapInfo; failed/low-resolution lookup uses this sentinel.
+        item.bitmap = com.android.launcher3.icons.BitmapInfo.LOW_RES_INFO;
         item.onAddToDatabase(writer);
         assertEquals("Custom saved label", writer.getValues(context).getAsString(Favorites.TITLE));
     }

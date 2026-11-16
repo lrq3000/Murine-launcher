@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="workspace_item_save_failed">The shortcut could not be saved. Try again when storage is available.</string>
     <string name="pref_group_grid_size_title">Grid size</string>
     <string name="pref_group_grid_size_desc">Change the number of rows and columns</string>
     <string name="pref_group_icon_scale_title">Icon scale</string>

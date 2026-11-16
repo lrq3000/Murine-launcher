@@ -93,6 +93,7 @@ public final class ShortcutAvailabilityJournal {
     /** Only exact target resolution can end recovery; volume state and wall-clock time are deliberately not evidence. */
     public synchronized Decision evaluate(Target target, boolean exact, Boolean external,
             String uuid, String volume) {
+        if (!mHealthy && mDirty) persistNow();
         if (mHealthy && mRemoved.contains(target)) return Decision.REMOVE;
         PackageState state = state(target.profile, target.packageName);
         boolean storageChanged = false;
@@ -147,6 +148,10 @@ public final class ShortcutAvailabilityJournal {
 
     /** The durable row snapshot precedes favorites deletion, so interruption cannot resurrect old rows after reinstall. */
     public synchronized boolean removed(long profile, String pkg, List<Target> targets) {
+        return captureRemoval(profile, pkg, targets, true);
+    }
+
+    public synchronized boolean captureRemoval(long profile, String pkg, List<Target> targets, boolean allLayoutsCovered) {
         if (!mHealthy && !persistNow()) return false;
         for (Target target : targets) {
             if (target.profile != profile || !target.packageName.equals(pkg)) {
@@ -160,7 +165,7 @@ public final class ShortcutAvailabilityJournal {
         PackageState state = state(profile, pkg);
         state.generation++;
         state.recovering = false;
-        state.pendingRemoval = false;
+        state.pendingRemoval = !allLayoutsCovered;
         // Failed atomic commits disable destructive decisions in this process, including staged tombstones.
         return persistNow();
     }

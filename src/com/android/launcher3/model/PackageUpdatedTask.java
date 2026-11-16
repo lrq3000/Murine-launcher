@@ -261,6 +261,7 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                                 } else if (decision == ShortcutAvailabilityJournal.Decision.PRESERVE) {
                                     forceKeepShortcuts.add(itemInfo.id);
                                     itemInfo.runtimeStatusFlags |= WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
+                                    availability.hydrateUnavailable(itemInfo);
                                     updatedWorkspaceItems.add(itemInfo);
                                     return; // Keep the original intent and cached appearance; no failed-query database write.
                                 } else if (decision == ShortcutAvailabilityJournal.Decision.AVAILABLE) {

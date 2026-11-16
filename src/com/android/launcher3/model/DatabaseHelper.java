@@ -311,9 +311,13 @@ public class DatabaseHelper extends NoLocaleSQLiteHelper implements
     }
 
     private String mWorkspaceIdentity;
+    private long mWorkspaceIdentityEpoch = -1;
 
     String getWorkspaceIdentity() {
-        if (mWorkspaceIdentity == null) mWorkspaceIdentity = WorkspaceDatabaseIdentity.get(getWritableDatabase());
+        if (mWorkspaceIdentity == null || mWorkspaceIdentityEpoch != WorkspaceDatabaseIdentity.epoch()) {
+            mWorkspaceIdentity = WorkspaceDatabaseIdentity.get(getWritableDatabase());
+            mWorkspaceIdentityEpoch = WorkspaceDatabaseIdentity.epoch();
+        }
         return mWorkspaceIdentity;
     }
 

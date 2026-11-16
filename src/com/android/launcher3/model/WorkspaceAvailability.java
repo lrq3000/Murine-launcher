@@ -17,6 +17,8 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.LauncherActivityInfo;
 import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
+import android.database.sqlite.SQLiteDatabase;
+import com.android.launcher3.LauncherFiles;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.Environment;
@@ -53,28 +55,41 @@ import javax.inject.Inject;
 public final class WorkspaceAvailability {
     private final Context mContext;
     private final ModelDbController mDatabase;
-    private final UserCache mUsers;
+    private final ShortcutAvailabilityJournal.Persistence mPersistenceOverride;
     private ShortcutAvailabilityJournal mJournal;
+    private static final java.util.concurrent.atomic.AtomicLong RESTORE_EPOCH = new java.util.concurrent.atomic.AtomicLong();
+    private long mRestoreEpoch = -1;
+    private boolean mLayoutsReconciled;
+    private final WorkspaceBindGuard mBindGuard = new WorkspaceBindGuard();
+    public WorkspaceBindGuard getBindGuard() { return mBindGuard; }
 
     @Inject
     public WorkspaceAvailability(@ApplicationContext Context context, ModelDbController database,
             UserCache users) {
+        this(context, database, users, null);
+    }
+
+    WorkspaceAvailability(Context context, ModelDbController database, UserCache users,
+            ShortcutAvailabilityJournal.Persistence persistence) {
         mContext = context;
         mDatabase = database;
-        mUsers = users;
+        mPersistenceOverride = persistence;
         database.setWorkspaceAvailability(this);
     }
 
     private synchronized ShortcutAvailabilityJournal journal() {
-        if (mJournal == null) {
+        if (mJournal == null || mRestoreEpoch != RESTORE_EPOCH.get()) {
             // Do not back up device-specific storage knowledge or pending system events to another device.
-            mJournal = new ShortcutAvailabilityJournal(new AtomicAvailabilityPersistence(
-                    new File(mContext.getNoBackupFilesDir(), "workspace-availability-v1")));
+            mJournal = new ShortcutAvailabilityJournal(mPersistenceOverride != null ? mPersistenceOverride
+                    : new AtomicAvailabilityPersistence(new File(mContext.getNoBackupFilesDir(), "workspace-availability-v1")));
+            mRestoreEpoch = RESTORE_EPOCH.get();
+            mLayoutsReconciled = false;
         }
         return mJournal;
     }
 
     public void beginLoad() {
+        mLayoutsReconciled = false;
         journal().beginBatch();
     }
 
@@ -105,8 +120,10 @@ public final class WorkspaceAvailability {
 
     /** Called off-UI at callback receipt, before a model task can be discarded or a running loader can bind. */
     public synchronized void recordEvent(int operation, UserHandle user, String[] packages) {
-        long serial = mUsers.getSerialNumberForUser(user);
+        // UserCache deliberately falls back to the handle ID before its model-thread refresh; that is not a stable serial.
+        long serial = mContext.getSystemService(UserManager.class).getSerialNumberForUser(user);
         if (serial < 0) return;
+        if (operation == PackageUpdatedTask.OP_REMOVE) mBindGuard.invalidate();
         for (String pkg : packages) {
             switch (operation) {
                 case PackageUpdatedTask.OP_REMOVE -> journal().packageRemoved(serial, pkg);
@@ -119,33 +136,48 @@ public final class WorkspaceAvailability {
 
     /** Snapshot only ordinary rows belonging to this confirmed uninstall; ADD never cancels their removal. */
     public synchronized void reconcilePendingRemovals() {
-        for (var removal : journal().pendingRemovals()) {
-            try {
-            List<Target> targets = new ArrayList<>();
-            String database = mDatabase.getWorkspaceIdentity();
-            try (var cursor = mDatabase.query(new String[] {Favorites._ID, Favorites.INTENT},
-                    Favorites.PROFILE_ID + "=? AND " + Favorites.ITEM_TYPE + "=? AND " + Favorites.RESTORED + "=0",
-                    new String[] {Long.toString(removal.profile()), Integer.toString(Favorites.ITEM_TYPE_APPLICATION)}, null)) {
-                while (cursor.moveToNext()) {
-                    try {
-                        Intent intent = Intent.parseUri(cursor.getString(1), 0);
-                        ComponentName component = intent.getComponent();
-                        if (component != null && removal.packageName().equals(component.getPackageName())) {
-                            Target target = new Target(database, cursor.getLong(0), removal.profile(),
-                                    removal.packageName(), component.flattenToString());
-                            if (journal().belongsToPendingRemoval(target)) targets.add(target);
-                        }
-                    } catch (Exception e) {
-                        // Corrupt intents remain on the loader's specialized validation path.
-                        Log.w("WorkspaceAvailability", "Cannot snapshot corrupt shortcut", e);
-                    }
+        ShortcutAvailabilityJournal store = journal();
+        if (mLayoutsReconciled && store.pendingRemovals().isEmpty()) return;
+        Set<File> files = new HashSet<>();
+        for (String name : LauncherFiles.GRID_DB_FILES) {
+            File file = mContext.getDatabasePath(name);
+            if (file.exists()) files.add(file);
+        }
+        File active = mDatabase.getWorkspaceDatabaseFile();
+        if (active != null && active.exists()) files.add(active);
+        List<WorkspaceLayoutStore.Layout> layouts = new ArrayList<>();
+        boolean complete = true;
+        try {
+            for (File file : files) {
+                try {
+                    layouts.add(new WorkspaceLayoutStore.Layout(file.getName(),
+                            SQLiteDatabase.openDatabase(file.getPath(), null, SQLiteDatabase.OPEN_READWRITE)));
+                } catch (RuntimeException e) {
+                    complete = false;
+                    Log.w("WorkspaceAvailability", "Retaining removal receipt for unreadable layout " + file.getName(), e);
                 }
             }
-            journal().removed(removal.profile(), removal.packageName(), targets);
-            } catch (RuntimeException e) {
-                Log.e("WorkspaceAvailability", "Pending uninstall retained for later reconciliation", e);
-            }
+            mLayoutsReconciled = WorkspaceLayoutStore.reconcile(layouts, store, WorkspaceAvailability::parseComponent, complete);
+        } finally {
+            for (var layout : layouts) layout.database().close();
         }
+    }
+
+    public static WorkspaceLayoutStore.Component parseComponent(String uri) {
+        try {
+            ComponentName component = Intent.parseUri(uri, 0).getComponent();
+            return component == null ? null : new WorkspaceLayoutStore.Component(component.getPackageName(), component.flattenToString());
+        } catch (Exception e) {
+            return null; // Corrupt intents retain their dedicated loader validation.
+        }
+    }
+
+    /** Called on staged files before replacing live databases, while local restore still has no model owner. */
+    public static void prepareRestoredDatabase(Context context, File file) {
+        ShortcutAvailabilityJournal store = new ShortcutAvailabilityJournal(new AtomicAvailabilityPersistence(
+                new File(context.getNoBackupFilesDir(), "workspace-availability-v1")));
+        WorkspaceLayoutStore.prepareRestoredDatabase(file, store, WorkspaceAvailability::parseComponent);
+        RESTORE_EPOCH.incrementAndGet();
     }
 
     /** Call before a loader or install queue can reuse old row IDs after a completed uninstall. */
@@ -235,7 +267,7 @@ public final class WorkspaceAvailability {
     }
 
     public Decision evaluate(WorkspaceItemInfo item) {
-        return evaluate(item.id, mUsers.getSerialNumberForUser(item.user), item.intent, item.user);
+        return evaluate(item.id, mContext.getSystemService(UserManager.class).getSerialNumberForUser(item.user), item.intent, item.user);
     }
 
     public synchronized boolean isConfirmedRemoved(ItemInfo item) {
@@ -244,7 +276,7 @@ public final class WorkspaceAvailability {
                 || item.itemType != Favorites.ITEM_TYPE_APPLICATION || component == null) return false;
         try {
             return journal().isRemoved(new Target(mDatabase.getWorkspaceIdentity(), item.id,
-                    mUsers.getSerialNumberForUser(item.user), component.getPackageName(), component.flattenToString()));
+                    mContext.getSystemService(UserManager.class).getSerialNumberForUser(item.user), component.getPackageName(), component.flattenToString()));
         } catch (RuntimeException e) {
             return false;
         }
@@ -263,7 +295,7 @@ public final class WorkspaceAvailability {
                 Decision decision = evaluate(workspace);
                 if (decision == Decision.PRESERVE) {
                     workspace.runtimeStatusFlags |= ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE;
-                    loadSavedAppearance(workspace);
+                    hydrateUnavailable(workspace);
                 }
                 if (decision == Decision.AVAILABLE
                         && (workspace.runtimeStatusFlags & ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE) != 0) {
@@ -285,7 +317,7 @@ public final class WorkspaceAvailability {
     public boolean hasWorkspacePackage(UserHandle user, String pkg) {
         if (pkg == null) return false;
         try (var cursor = mDatabase.query(new String[] {Favorites.INTENT}, Favorites.PROFILE_ID + "=? AND " + Favorites.ITEM_TYPE + "=?",
-                new String[] {Long.toString(mUsers.getSerialNumberForUser(user)), Integer.toString(Favorites.ITEM_TYPE_APPLICATION)}, null)) {
+                new String[] {Long.toString(mContext.getSystemService(UserManager.class).getSerialNumberForUser(user)), Integer.toString(Favorites.ITEM_TYPE_APPLICATION)}, null)) {
             while (cursor.moveToNext()) {
                 try {
                     ComponentName component = Intent.parseUri(cursor.getString(0), 0).getComponent();
@@ -343,15 +375,50 @@ public final class WorkspaceAvailability {
         BitmapInfo bitmap = item.bitmap;
         CharSequence title = item.title;
         CharSequence description = item.contentDescription;
-        icons.getTitleAndIcon(item, item.getMatchingLookupFlag());
+        WorkspaceItemInfo candidate = new WorkspaceItemInfo(item);
+        candidate.runtimeStatusFlags &= ~ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE;
+        icons.getTitleAndIcon(candidate, item.getMatchingLookupFlag());
         boolean stillAvailable = evaluate(item) == Decision.AVAILABLE;
-        if (!stillAvailable || item.bitmap == null || icons.isDefaultIcon(item.bitmap, item.user)) {
+        if (stillAvailable && candidate.bitmap != null && !icons.isDefaultIcon(candidate.bitmap, item.user)) {
+            item.bitmap = candidate.bitmap;
+            item.title = candidate.title;
+            item.contentDescription = candidate.contentDescription;
+        } else {
             if (bitmap != null) item.bitmap = bitmap;
             item.title = title;
             item.contentDescription = description;
         }
         if (TextUtils.isEmpty(item.title)) item.title = title;
         if (!stillAvailable) item.runtimeStatusFlags |= ItemInfoWithIcon.FLAG_DISABLED_NOT_AVAILABLE;
+        populateRuntimeFlags(item);
+    }
+
+    /** Reconstruct independently observable restrictions even when no LauncherActivityInfo exists after restart. */
+    public void populateRuntimeFlags(WorkspaceItemInfo item) {
+        try {
+            UserManager users = mContext.getSystemService(UserManager.class);
+            item.runtimeStatusFlags = users.isQuietModeEnabled(item.user)
+                    ? item.runtimeStatusFlags | ItemInfoWithIcon.FLAG_DISABLED_QUIET_USER
+                    : item.runtimeStatusFlags & ~ItemInfoWithIcon.FLAG_DISABLED_QUIET_USER;
+            item.runtimeStatusFlags = users.isUserUnlocked(item.user)
+                    ? item.runtimeStatusFlags & ~ItemInfoWithIcon.FLAG_DISABLED_LOCKED_USER
+                    : item.runtimeStatusFlags | ItemInfoWithIcon.FLAG_DISABLED_LOCKED_USER;
+            ApplicationInfo app = mContext.getSystemService(LauncherApps.class).getApplicationInfo(
+                    item.getTargetPackage(), PackageManager.MATCH_UNINSTALLED_PACKAGES, item.user);
+            if ((app.flags & ApplicationInfo.FLAG_SUSPENDED) != 0) {
+                item.runtimeStatusFlags |= ItemInfoWithIcon.FLAG_DISABLED_SUSPENDED;
+            } else if ((app.flags & ApplicationInfo.FLAG_INSTALLED) != 0) {
+                item.runtimeStatusFlags &= ~ItemInfoWithIcon.FLAG_DISABLED_SUSPENDED;
+            }
+        } catch (PackageManager.NameNotFoundException | RuntimeException e) {
+            // Missing independent evidence must not erase publisher/admin/lock/suspension bits already supplied elsewhere.
+            Log.d("WorkspaceAvailability", "Independent disabled state partly unresolved", e);
+        }
+    }
+
+    public void hydrateUnavailable(WorkspaceItemInfo item) {
+        loadSavedAppearance(item);
+        populateRuntimeFlags(item);
     }
 
     private void loadSavedAppearance(WorkspaceItemInfo item) {

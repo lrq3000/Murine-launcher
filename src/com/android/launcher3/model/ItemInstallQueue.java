@@ -99,6 +99,7 @@ public class ItemInstallQueue {
 
     // Only accessed on worker thread
     private List<PendingInstallShortcutInfo> mItems;
+    private boolean mFlushPending;
 
     @Inject
     public ItemInstallQueue(@ApplicationContext Context context) {
@@ -130,24 +131,28 @@ public class ItemInstallQueue {
             return;
         }
         ensureQueueLoaded();
-        if (mItems.isEmpty()) {
+        if (mItems.isEmpty() || mFlushPending) {
             return;
         }
 
-        List<Pair<ItemInfo, Object>> installQueue = mItems.stream()
+        List<PendingInstallShortcutInfo> inFlight = new ArrayList<>(mItems);
+        List<Pair<ItemInfo, Object>> installQueue = inFlight.stream()
                 // A returning storage package is not a new workspace install, including sessions queued while unloaded.
                 .filter(info -> info.itemType != Favorites.ITEM_TYPE_APPLICATION
                         || !launcher.getModel().getWorkspaceAvailability().hasWorkspacePackage(info.user, getIntentPackage(info.intent)))
                 .map(info -> info.getItemInfo(mContext))
                 .collect(Collectors.toList());
 
-        // Add the items and clear queue
-        if (!installQueue.isEmpty()) {
-            // add log
-            launcher.getModel().addAndBindAddedWorkspaceItems(installQueue);
-        }
-        mItems.clear();
-        mStorage.getFile(mContext).delete();
+        mFlushPending = true;
+        launcher.getModel().addAndBindAddedWorkspaceItems(installQueue, committed -> {
+            mFlushPending = false;
+            if (committed) {
+                mItems.removeAll(inFlight);
+                if (mItems.isEmpty()) mStorage.getFile(mContext).delete();
+                else mStorage.write(mContext, mItems);
+            }
+            // On rejection keep the durable request; foreground resume or a later queue addition retries it.
+        });
     }
 
     /**

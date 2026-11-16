@@ -144,7 +144,7 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
         boolean available = itemType != Favorites.ITEM_TYPE_APPLICATION || status != 0 || isArchived()
                 || (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) == 0;
         if ((available || id == NO_ID) && (itemType != Favorites.ITEM_TYPE_APPLICATION
-                || id == NO_ID || !TextUtils.isEmpty(title))) writer.put(Favorites.TITLE, title);
+                || status != 0 || isArchived() || id == NO_ID || !TextUtils.isEmpty(title))) writer.put(Favorites.TITLE, title);
         writer.put(Favorites.INTENT, getIntent())
                 .put(Favorites.OPTIONS, options)
                 .put(Favorites.RESTORED, status);

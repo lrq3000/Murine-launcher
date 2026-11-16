@@ -51,29 +51,8 @@ public class SdCardAvailableReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        final LauncherApps launcherApps = context.getSystemService(LauncherApps.class);
-        for (PackageUserKey puk : mPackages) {
-            UserHandle user = puk.mUser;
-
-            final ArrayList<String> packagesRemoved = new ArrayList<>();
-            final ArrayList<String> packagesUnavailable = new ArrayList<>();
-
-            if (!launcherApps.isPackageEnabled(puk.mPackageName, user)) {
-                if (new ApplicationInfoWrapper(context, puk.mPackageName, user).isOnSdCard()) {
-                    packagesUnavailable.add(puk.mPackageName);
-                } else {
-                    packagesRemoved.add(puk.mPackageName);
-                }
-            }
-            if (!packagesRemoved.isEmpty()) {
-                mModel.newModelCallbacks().onPackagesRemoved(user, packagesRemoved);
-            }
-            if (!packagesUnavailable.isEmpty()) {
-                mModel.newModelCallbacks().onPackagesUnavailable(
-                        packagesUnavailable.toArray(new String[packagesUnavailable.size()]),
-                        user, false);
-            }
-        }
+        // Boot completion is a revalidation hint, never evidence that a missing app was uninstalled.
+        mModel.validateModelDataOnResume();
 
         // Unregister the broadcast receiver, just in case
         mContext.unregisterReceiver(this);

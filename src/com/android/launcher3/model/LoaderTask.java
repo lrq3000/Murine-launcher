@@ -293,7 +293,8 @@ public class LoaderTask implements Runnable {
             }
 
             verifyNotStopped();
-            mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false);
+            mModel.getWorkspaceAvailability().reconcileBeforeBind(mBgDataModel,
+                    () -> mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false));
             logASplit("bindWorkspace finished");
 
             mModelDelegate.workspaceLoadComplete();
@@ -457,6 +458,7 @@ public class LoaderTask implements Runnable {
         }
         Log.d(TAG, "loadWorkspace: loading default favorites if necessary");
         dbController.loadDefaultFavoritesIfNecessary();
+        mModel.getWorkspaceAvailability().reconcilePendingRemovals();
 
         synchronized (mBgDataModel) {
             mBgDataModel.clear();
@@ -614,6 +616,7 @@ public class LoaderTask implements Runnable {
                 info.rank = rank;
 
                 if (info instanceof WorkspaceItemInfo wii
+                        && (wii.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) == 0
                         && wii.getMatchingLookupFlag().isVisuallyLessThan(DESKTOP_ICON_FLAG)
                         && wii.itemType == Favorites.ITEM_TYPE_APPLICATION
                         && verifiers.stream().anyMatch(it -> it.isItemInPreview(info.rank))) {
@@ -649,7 +652,8 @@ public class LoaderTask implements Runnable {
             for (ItemInfo info : mBgDataModel.itemsIdMap) {
                 if (info instanceof WorkspaceItemInfo) {
                     WorkspaceItemInfo si = (WorkspaceItemInfo) info;
-                    if (si.isPromise() && si.getTargetComponent() != null) {
+                    if ((si.isPromise() || (si.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0)
+                            && si.getTargetComponent() != null) {
                         updateHandler.addPackagesToIgnore(
                                 si.user, si.getTargetComponent().getPackageName());
                     }
@@ -699,13 +703,7 @@ public class LoaderTask implements Runnable {
         // Update pinned state of model shortcuts
         mBgDataModel.updateShortcutPinnedState(mContext);
 
-        if (!Utilities.isBootCompleted() && !mPendingPackages.isEmpty()) {
-            mContext.registerReceiver(
-                    new SdCardAvailableReceiver(mContext, mModel, mPendingPackages),
-                    new IntentFilter(Intent.ACTION_BOOT_COMPLETED),
-                    null,
-                    MODEL_EXECUTOR.getHandler());
-        }
+        // Boot/storage hints are registered once by ModelInitializer and released with the model lifecycle.
     }
 
     private List<LauncherActivityInfo> loadAllApps() {

@@ -301,11 +301,20 @@ public class DatabaseHelper extends NoLocaleSQLiteHelper implements
      */
     public void createEmptyDB(SQLiteDatabase db) {
         try (SQLiteTransaction t = new SQLiteTransaction(db)) {
+            WorkspaceDatabaseIdentity.reset(db);
+            mWorkspaceIdentity = null;
             dropTable(db, Favorites.TABLE_NAME);
             dropTable(db, "workspaceScreens");
             onCreate(db);
             t.commit();
         }
+    }
+
+    private String mWorkspaceIdentity;
+
+    String getWorkspaceIdentity() {
+        if (mWorkspaceIdentity == null) mWorkspaceIdentity = WorkspaceDatabaseIdentity.get(getWritableDatabase());
+        return mWorkspaceIdentity;
     }
 
     /**

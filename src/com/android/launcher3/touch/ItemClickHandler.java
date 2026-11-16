@@ -284,6 +284,9 @@ public class ItemClickHandler {
      * @return true iff the disabled item click has been handled.
      */
     public static boolean handleDisabledItemClicked(WorkspaceItemInfo shortcut, Context context) {
+        if ((shortcut.runtimeStatusFlags & WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0) {
+            LauncherAppState.getInstance(context).getModel().validateModelDataOnResume();
+        }
         final int disabledFlags = shortcut.runtimeStatusFlags
                 & WorkspaceItemInfo.FLAG_DISABLED_MASK;
         // Handle the case where the disabled reason is DISABLED_REASON_VERSION_LOWER.

@@ -206,6 +206,10 @@ public class LoaderCursor extends CursorWrapper {
         }
     }
 
+    public ShortcutAvailabilityJournal.Decision getAvailabilityDecision(Intent intent) {
+        return mModel.getWorkspaceAvailability().evaluate(id, serialNumber, intent, user);
+    }
+
     @VisibleForTesting
     public WorkspaceItemInfo loadSimpleWorkspaceItem() {
         final WorkspaceItemInfo info = new WorkspaceItemInfo();
@@ -224,6 +228,22 @@ public class LoaderCursor extends CursorWrapper {
         return info;
     }
 
+    /** Load the saved normal appearance without asking a missing APK to replace it with a generic icon/title. */
+    public WorkspaceItemInfo loadUnavailableApplication(Intent intent) {
+        WorkspaceItemInfo info = new WorkspaceItemInfo();
+        info.user = user;
+        info.intent = intent;
+        info.title = getString(mTitleIndex);
+        if (!loadIconFromDb(info)) {
+            CharSequence savedTitle = info.title;
+            mIconCache.getTitleAndIcon(info, DEFAULT_LOOKUP_FLAG);
+            if (!TextUtils.isEmpty(savedTitle)) info.title = savedTitle;
+        }
+        if (TextUtils.isEmpty(info.title)) info.title = intent.getComponent().getClassName();
+        info.contentDescription = mIconCache.getUserBadgedLabel(info.title, user);
+        return info;
+    }
+
     /**
      * Loads the icon from the cursor and updates the {@param info} if the icon is an app resource.
      */
@@ -233,7 +253,8 @@ public class LoaderCursor extends CursorWrapper {
 
     public IconRequestInfo<WorkspaceItemInfo> createIconRequestInfo(
             WorkspaceItemInfo wai, boolean useLowResIcon) {
-        byte[] iconBlob = itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT || restoreFlag != 0
+        byte[] iconBlob = itemType == Favorites.ITEM_TYPE_APPLICATION
+                || itemType == Favorites.ITEM_TYPE_DEEP_SHORTCUT || restoreFlag != 0
                 || (wai.isInactiveArchive() && Flags.restoreArchivedAppIconsFromDb())
                 ? getIconBlob() : null;
         return new IconRequestInfo<>(wai, mActivityInfo, iconBlob, useLowResIcon);

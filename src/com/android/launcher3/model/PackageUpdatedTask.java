@@ -96,6 +96,20 @@ public class PackageUpdatedTask implements ModelUpdateTask {
 
     @NonNull
     private final String[] mPackages;
+    private volatile boolean mAvailabilityEventRecorded;
+
+    public void recordAvailabilityEvent(WorkspaceAvailability availability) {
+        if (!mAvailabilityEventRecorded) {
+            availability.recordEvent(mOp, mUser, mPackages);
+            mAvailabilityEventRecorded = true;
+        }
+    }
+
+    /** Must precede LauncherModel's unloaded-task discard gate. */
+    public void prepareAvailability(WorkspaceAvailability availability) {
+        recordAvailabilityEvent(availability);
+        availability.reconcilePendingRemovals();
+    }
 
     public PackageUpdatedTask(final int op, @NonNull final UserHandle user,
             @NonNull final String... packages) {
@@ -108,6 +122,8 @@ public class PackageUpdatedTask implements ModelUpdateTask {
     public void execute(@NonNull ModelTaskController taskController, @NonNull BgDataModel dataModel,
             @NonNull AllAppsList appsList) {
         final Context context = taskController.getContext();
+        final WorkspaceAvailability availability = taskController.getModel().getWorkspaceAvailability();
+        prepareAvailability(availability);
         if (UserCache.INSTANCE.get(context).getUserInfo(mUser).type == UserIconInfo.TYPE_UNKNOWN) {
             return; // A profile type the launcher doesn't handle, see UserCache#getUserProfiles
         }
@@ -231,6 +247,25 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                     if (cn != null && matcher.test(itemInfo)) {
                         String packageName = cn.getPackageName();
 
+                        if (itemInfo.itemType == Favorites.ITEM_TYPE_APPLICATION && itemInfo.status == 0
+                                && !itemInfo.isArchived()) {
+                            if (mOp == OP_REMOVE) {
+                                // A delayed uninstall task must never match rows created by a later installation.
+                                if (!availability.isConfirmedRemoved(itemInfo)) forceKeepShortcuts.add(itemInfo.id);
+                            } else if (mOp == OP_ADD || mOp == OP_UPDATE || mOp == OP_UNAVAILABLE) {
+                                ShortcutAvailabilityJournal.Decision decision = mOp == OP_UNAVAILABLE
+                                        ? ShortcutAvailabilityJournal.Decision.PRESERVE : availability.evaluate(itemInfo);
+                                if (decision == ShortcutAvailabilityJournal.Decision.PRESERVE) {
+                                    forceKeepShortcuts.add(itemInfo.id);
+                                    itemInfo.runtimeStatusFlags |= WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
+                                    updatedWorkspaceItems.add(itemInfo);
+                                    return; // Keep the original intent and cached appearance; no failed-query database write.
+                                } else if (decision == ShortcutAvailabilityJournal.Decision.AVAILABLE) {
+                                    forceKeepShortcuts.add(itemInfo.id);
+                                }
+                            }
+                        }
+
                         if (itemInfo.hasStatusFlag(WorkspaceItemInfo.FLAG_SUPPORTS_WEB_UI)) {
                             forceKeepShortcuts.add(itemInfo.id);
                             if (mOp == OP_REMOVE) {
@@ -307,7 +342,8 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                                 itemInfo.status = WorkspaceItemInfo.DEFAULT;
                                 infoUpdated = true;
                             }
-                        } else if (isNewApkAvailable && removedComponents.contains(cn)) {
+                        } else if (isNewApkAvailable && removedComponents.contains(cn)
+                                && !forceKeepShortcuts.contains(itemInfo.id)) {
                             if (updateWorkspaceItemIntent(context, itemInfo, packageName)) {
                                 infoUpdated = true;
                             }
@@ -423,6 +459,11 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                     ItemInfoMatcher.ofPackages(removedPackages, mUser)
                             .or(ItemInfoMatcher.ofComponents(removedComponents, mUser))
                             .and(ItemInfoMatcher.ofItemIds(forceKeepShortcuts).negate());
+            if (mOp == OP_REMOVE) {
+                removeMatch = removeMatch.and(item -> !(item instanceof WorkspaceItemInfo workspace)
+                        || item.itemType != Favorites.ITEM_TYPE_APPLICATION || workspace.status != 0
+                        || availability.isConfirmedRemoved(item));
+            }
             taskController.deleteAndBindComponentsRemoved(removeMatch,
                     "removed because the corresponding package or component is removed. "
                             + "mOp=" + mOp + " removedPackages=" + removedPackages.stream().collect(

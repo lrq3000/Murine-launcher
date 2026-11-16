@@ -60,6 +60,9 @@ public final class ShortcutAvailabilityJournalTest {
         internal.unavailable(7, "example.app");
         expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
                 new ShortcutAvailabilityJournal(internalDisk).evaluate(a, false, null, null, null));
+        internal.evaluate(a, true, false, "internal", null);
+        expect(ShortcutAvailabilityJournal.Decision.NORMAL, internal.evaluate(a, false, null, null, null));
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE, internal.evaluate(b, false, null, null, null));
 
         // Confirmed removal is durable, profile/component/database scoped, and survives a rapid re-add.
         expect(true, journal.removed(7, "example.app", List.of(a, b)));
@@ -74,6 +77,18 @@ public final class ShortcutAvailabilityJournalTest {
         var newDb = new ShortcutAvailabilityJournal.Target("workspace-generation-B", 42, 7,
                 "example.app", "example.app/.Main");
         expect(ShortcutAvailabilityJournal.Decision.AVAILABLE, restart.evaluate(newDb, true, false, "internal", null));
+
+        // Receipt while loading is durable before the model can obtain a row snapshot.
+        restart.packageRemoved(19, "pending.app");
+        restart.added(19, "pending.app");
+        var pendingRestart = new ShortcutAvailabilityJournal(disk);
+        expect(true, pendingRestart.hasPendingRemoval(19, "pending.app"));
+        var pendingRow = new ShortcutAvailabilityJournal.Target("workspace-generation-A", 71, 19,
+                "pending.app", "pending.app/.Main");
+        expect(true, pendingRestart.removed(19, "pending.app", List.of(pendingRow)));
+        expect(false, new ShortcutAvailabilityJournal(disk).hasPendingRemoval(19, "pending.app"));
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE,
+                new ShortcutAvailabilityJournal(disk).evaluate(pendingRow, true, false, "internal", null));
 
         // Failed storage must never turn missing targets or stale removal metadata into a purge.
         disk.fail = true;

@@ -174,6 +174,14 @@ public class ModelDbController {
         return result;
     }
 
+    /** Identifies the actual workspace generation, not just its reusable filename or row IDs. */
+    @WorkerThread
+    public String getWorkspaceIdentity() {
+        createDbIfNotExists();
+        return mOpenHelper.getDatabaseName() + ":"
+                + mOpenHelper.getWorkspaceIdentity();
+    }
+
     /**
      * Refer {@link SQLiteDatabase#insert(String, String, ContentValues)}
      */

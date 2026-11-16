@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.Collections;
+import java.util.stream.Collectors;
 
 /** Durable ordinary-application availability decisions, independent of Android package queries. */
 public final class ShortcutAvailabilityJournal {
@@ -29,6 +31,7 @@ public final class ShortcutAvailabilityJournal {
         void write(byte[] bytes) throws IOException;
     }
     public record Target(String database, long id, long profile, String packageName, String component) { }
+    public record Removal(long profile, String packageName) { }
     private record PackageKey(long profile, String name) { }
     private static final int MAGIC = 0x53415631;
     private static final int VERSION = 1;
@@ -36,6 +39,7 @@ public final class ShortcutAvailabilityJournal {
     private static final class PackageState {
         int external = -1;
         boolean recovering;
+        boolean pendingRemoval;
         long generation;
         String installationUuid = "";
         String publicVolumeUuid = "";
@@ -82,10 +86,14 @@ public final class ShortcutAvailabilityJournal {
                 state.publicVolumeUuid = volume;
                 changed = true;
             }
+            if (state.recovering && !hasRecovery(target.profile, target.packageName)) {
+                state.recovering = false;
+                changed = true;
+            }
             if (changed) persist();
             return Decision.AVAILABLE;
         }
-        if (!mHealthy || state.external != 0 || state.recovering
+        if (!mHealthy || !mItems.containsKey(target) || state.external != 0 || state.recovering
                 || Boolean.TRUE.equals(mItems.get(target))) {
             if (!Boolean.TRUE.equals(mItems.put(target, true))) persist();
             return Decision.PRESERVE;
@@ -113,6 +121,7 @@ public final class ShortcutAvailabilityJournal {
         PackageState state = state(profile, pkg);
         state.generation++;
         state.recovering = false;
+        state.pendingRemoval = false;
         // Failed atomic commits disable destructive decisions in this process, including staged tombstones.
         return persist();
     }
@@ -125,6 +134,25 @@ public final class ShortcutAvailabilityJournal {
         state.installationUuid = "";
         state.publicVolumeUuid = "";
         persist();
+    }
+
+    public synchronized void packageRemoved(long profile, String pkg) {
+        state(profile, pkg).pendingRemoval = true;
+        persist();
+    }
+
+    public synchronized boolean hasPendingRemoval(long profile, String pkg) {
+        return mHealthy && state(profile, pkg).pendingRemoval;
+    }
+
+    public synchronized List<Removal> pendingRemovals() {
+        if (!mHealthy) return Collections.emptyList();
+        return mPackages.entrySet().stream().filter(entry -> entry.getValue().pendingRemoval)
+                .map(entry -> new Removal(entry.getKey().profile, entry.getKey().name)).collect(Collectors.toList());
+    }
+
+    public synchronized boolean isRemoved(Target target) {
+        return mHealthy && mRemoved.contains(target);
     }
 
     public synchronized boolean hasRecovery(long profile, String pkg) {
@@ -167,6 +195,7 @@ public final class ShortcutAvailabilityJournal {
                 PackageState state = entry.getValue();
                 out.writeInt(state.external);
                 out.writeBoolean(state.recovering);
+                out.writeBoolean(state.pendingRemoval);
                 out.writeLong(state.generation);
                 out.writeUTF(state.installationUuid);
                 out.writeUTF(state.publicVolumeUuid);
@@ -191,6 +220,7 @@ public final class ShortcutAvailabilityJournal {
                 state.external = in.readInt();
                 if (state.external < -1 || state.external > 1) throw new IOException("Invalid storage class");
                 state.recovering = in.readBoolean();
+                state.pendingRemoval = in.readBoolean();
                 state.generation = in.readLong();
                 state.installationUuid = in.readUTF();
                 state.publicVolumeUuid = in.readUTF();

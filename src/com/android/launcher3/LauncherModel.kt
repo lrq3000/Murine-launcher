@@ -46,6 +46,7 @@ import com.android.launcher3.model.ShortcutsChangedTask
 import com.android.launcher3.model.UserLockStateChangedTask
 import com.android.launcher3.model.UserManagerState
 import com.android.launcher3.model.WorkspaceItemSpaceFinder
+import com.android.launcher3.model.WorkspaceAvailability
 import com.android.launcher3.model.data.ItemInfo
 import com.android.launcher3.model.data.WorkspaceItemInfo
 import com.android.launcher3.pm.UserCache
@@ -87,6 +88,7 @@ constructor(
     private val binderFactory: BaseLauncherBinderFactory,
     private val spaceFinderFactory: Provider<WorkspaceItemSpaceFinder>,
     val modelDbController: ModelDbController,
+    val workspaceAvailability: WorkspaceAvailability,
 ) {
 
     private val mCallbacksList = ArrayList<BgDataModel.Callbacks>(1)
@@ -120,6 +122,7 @@ constructor(
     private val mDataValidationCheck = Runnable {
         if (mModelLoaded) {
             modelDelegate.validateData()
+            revalidateWorkspaceAvailability()
         }
     }
 
@@ -133,7 +136,10 @@ constructor(
 
     val bgDataModel: BgDataModel get() = mBgDataModel
 
-    fun newModelCallbacks() = ModelLauncherCallbacks(this::enqueueModelUpdateTask)
+    fun newModelCallbacks() = ModelLauncherCallbacks { task ->
+        if (task is PackageUpdatedTask) task.recordAvailabilityEvent(workspaceAvailability)
+        enqueueModelUpdateTask(task)
+    }
 
     /** Adds the provided items to the workspace. */
     fun addAndBindAddedWorkspaceItems(itemList: List<Pair<ItemInfo?, Any?>?>) {
@@ -167,6 +173,7 @@ constructor(
     /** Called when the model is destroyed */
     fun destroy() {
         mModelDestroyed = true
+        MODEL_EXECUTOR.handler.removeCallbacks(mDataValidationCheck)
         MODEL_EXECUTOR.execute { modelDelegate.destroy() }
     }
 
@@ -399,6 +406,23 @@ constructor(
         MODEL_EXECUTOR.post(mDataValidationCheck)
     }
 
+    /** Recheck on foreground/storage hints without feeding recovered apps into the install queue. */
+    private fun revalidateWorkspaceAvailability() {
+        if (mModelDestroyed || !isModelLoaded()) return
+        val packages = HashSet<PackageUserKey>()
+        synchronized(mBgDataModel) {
+            mBgDataModel.itemsIdMap.forEach { item ->
+                if (item is WorkspaceItemInfo && item.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && item.status == 0) {
+                    item.targetPackage?.let { packages.add(PackageUserKey(it, item.user)) }
+                }
+            }
+        }
+        packages.forEach { key ->
+            PackageUpdatedTask(PackageUpdatedTask.OP_UPDATE, key.mUser, key.mPackageName)
+                .execute(taskControllerProvider.get(), mBgDataModel, mBgAllAppsList)
+        }
+    }
+
     /** Called when the icons for packages have been updated in the icon cache. */
     fun onPackageIconsUpdated(updatedPackages: HashSet<String?>, user: UserHandle) {
         // If any package icon has changed (app was updated while launcher was dead),
@@ -421,6 +445,9 @@ constructor(
             return
         }
         MODEL_EXECUTOR.execute {
+            if (task is PackageUpdatedTask) {
+                task.prepareAvailability(workspaceAvailability)
+            }
             if (!isModelLoaded()) {
                 // Loader has not yet run.
                 return@execute

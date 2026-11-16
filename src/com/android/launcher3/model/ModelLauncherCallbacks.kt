@@ -100,7 +100,8 @@ class ModelLauncherCallbacks(private var taskExecutor: Consumer<ModelUpdateTask>
 
     fun onPackagesRemoved(user: UserHandle, packages: List<String>) {
         FileLog.d(TAG, "package removed received " + TextUtils.join(",", packages))
-        taskExecutor.accept(PackageUpdatedTask(OP_REMOVE, user, *packages.toTypedArray()))
+        // This helper is used by synthetic reconciliation, not the authoritative system uninstall callback.
+        taskExecutor.accept(PackageUpdatedTask(OP_UPDATE, user, *packages.toTypedArray()))
     }
 
     override fun onSessionFailure(packageName: String, user: UserHandle) {

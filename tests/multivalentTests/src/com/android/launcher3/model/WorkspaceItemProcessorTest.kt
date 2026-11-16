@@ -209,6 +209,21 @@ class WorkspaceItemProcessorTest {
         )
 
     @Test
+    fun `Boot completed with unresolved ordinary application retains original item`() {
+        mockCursor.restoreFlag = 0
+        whenever(mLauncherApps.isPackageEnabled("package", mUserHandle)).thenReturn(false)
+        whenever(mockCursor.getAvailabilityDecision(mIntent))
+            .thenReturn(ShortcutAvailabilityJournal.Decision.PRESERVE)
+        val item = WorkspaceItemInfo()
+        whenever(mockCursor.loadUnavailableApplication(any())).thenReturn(item)
+        itemProcessorUnderTest = createWorkspaceItemProcessorUnderTest(isSdCardReady = true)
+        itemProcessorUnderTest.processItem()
+        assertThat(item.intent).isSameInstanceAs(mIntent)
+        assertThat(item.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE).isNotEqualTo(0)
+        verify(mockCursor).checkAndAddItem(item, mockBgDataModel, null)
+    }
+
+    @Test
     fun `When user is null then mark item deleted`() {
         // Given
         mockCursor = mock<LoaderCursor>().apply { id = 1 }

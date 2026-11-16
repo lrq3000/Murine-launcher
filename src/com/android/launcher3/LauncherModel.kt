@@ -412,8 +412,15 @@ constructor(
         val packages = HashSet<PackageUserKey>()
         synchronized(mBgDataModel) {
             mBgDataModel.itemsIdMap.forEach { item ->
-                if (item is WorkspaceItemInfo && item.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && item.status == 0) {
-                    item.targetPackage?.let { packages.add(PackageUserKey(it, item.user)) }
+                if (item is WorkspaceItemInfo && item.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION && item.status == 0 && !item.isArchived) {
+                    val decision = workspaceAvailability.evaluate(item)
+                    val unavailable = (item.runtimeStatusFlags and WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE) != 0
+                    if (decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.NORMAL ||
+                        decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.REMOVE ||
+                        (decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.PRESERVE && !unavailable) ||
+                        (decision == com.android.launcher3.model.ShortcutAvailabilityJournal.Decision.AVAILABLE && unavailable)) {
+                        item.targetPackage?.let { packages.add(PackageUserKey(it, item.user)) }
+                    }
                 }
             }
         }

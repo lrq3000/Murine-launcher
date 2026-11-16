@@ -137,7 +137,7 @@ public class ItemInstallQueue {
         List<Pair<ItemInfo, Object>> installQueue = mItems.stream()
                 // A returning storage package is not a new workspace install, including sessions queued while unloaded.
                 .filter(info -> info.itemType != Favorites.ITEM_TYPE_APPLICATION
-                        || !launcher.getModel().getWorkspaceAvailability().hasRecovery(info.user, getIntentPackage(info.intent)))
+                        || !launcher.getModel().getWorkspaceAvailability().hasWorkspacePackage(info.user, getIntentPackage(info.intent)))
                 .map(info -> info.getItemInfo(mContext))
                 .collect(Collectors.toList());
 

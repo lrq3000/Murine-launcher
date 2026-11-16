@@ -188,7 +188,7 @@ public class LoaderCursor extends CursorWrapper {
             itemType = getInt(mItemTypeIndex);
             container = getInt(mContainerIndex);
             id = getInt(mIdIndex);
-            serialNumber = getInt(mProfileIdIndex);
+            serialNumber = getLong(mProfileIdIndex);
             user = allUsers.get(serialNumber);
             restoreFlag = getInt(mRestoredIndex);
         }

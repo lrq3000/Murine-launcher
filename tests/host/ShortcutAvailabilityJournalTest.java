@@ -90,6 +90,18 @@ public final class ShortcutAvailabilityJournalTest {
         expect(ShortcutAvailabilityJournal.Decision.REMOVE,
                 new ShortcutAvailabilityJournal(disk).evaluate(pendingRow, true, false, "internal", null));
 
+        // Metadata corruption must invalidate the whole authority, not leave partially trusted tombstones.
+        MemoryDisk corruptDisk = new MemoryDisk();
+        corruptDisk.bytes = disk.bytes.clone();
+        corruptDisk.bytes[corruptDisk.bytes.length - 1] ^= 1;
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(corruptDisk).evaluate(a, false, null, null, null));
+        new ShortcutAvailabilityJournal(disk).retireAbsent("workspace-generation-A", java.util.Set.of(b, pendingRow, newRow));
+        expect(ShortcutAvailabilityJournal.Decision.AVAILABLE,
+                new ShortcutAvailabilityJournal(disk).evaluate(a, true, false, "internal", null));
+        expect(ShortcutAvailabilityJournal.Decision.REMOVE,
+                new ShortcutAvailabilityJournal(disk).evaluate(b, false, null, null, null));
+
         // Failed storage must never turn missing targets or stale removal metadata into a purge.
         disk.fail = true;
         expect(false, restart.removed(8, "example.app", List.of(target(8, "example.app/.Main"))));
@@ -98,6 +110,18 @@ public final class ShortcutAvailabilityJournalTest {
         internalDisk.bytes = new byte[] {1, 2, 3};
         expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
                 new ShortcutAvailabilityJournal(internalDisk).evaluate(a, false, null, null, null));
+
+        MemoryDisk batchDisk = new MemoryDisk();
+        var batch = new ShortcutAvailabilityJournal(batchDisk);
+        batch.beginBatch();
+        batch.evaluate(a, false, null, null, null);
+        batch.evaluate(b, false, null, null, null);
+        expect(true, batchDisk.bytes == null);
+        batch.packageRemoved(7, "example.app");
+        expect(true, new ShortcutAvailabilityJournal(batchDisk).hasPendingRemoval(7, "example.app"));
+        batch.endBatch();
+        expect(ShortcutAvailabilityJournal.Decision.PRESERVE,
+                new ShortcutAvailabilityJournal(batchDisk).evaluate(b, false, null, null, null));
         System.out.println("PASS " + sCount + " journal assertions");
     }
 }

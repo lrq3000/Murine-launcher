@@ -174,7 +174,7 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                                 appsList.updatePackage(context, packages[i], mUser));
                     }
                 }
-                // Since package was just updated, the target must be available now.
+                // Ordinary targets are revalidated below before this default flag operation is applied.
                 flagOp = FlagOp.NO_OP.removeFlag(WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE);
                 break;
             case OP_REMOVE: {
@@ -255,7 +255,10 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                             } else if (mOp == OP_ADD || mOp == OP_UPDATE || mOp == OP_UNAVAILABLE) {
                                 ShortcutAvailabilityJournal.Decision decision = mOp == OP_UNAVAILABLE
                                         ? ShortcutAvailabilityJournal.Decision.PRESERVE : availability.evaluate(itemInfo);
-                                if (decision == ShortcutAvailabilityJournal.Decision.PRESERVE) {
+                                if (decision == ShortcutAvailabilityJournal.Decision.REMOVE) {
+                                    removedShortcuts.add(itemInfo.id);
+                                    return;
+                                } else if (decision == ShortcutAvailabilityJournal.Decision.PRESERVE) {
                                     forceKeepShortcuts.add(itemInfo.id);
                                     itemInfo.runtimeStatusFlags |= WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
                                     updatedWorkspaceItems.add(itemInfo);
@@ -379,14 +382,22 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                                     itemInfo.setNonResizeable(ApiWrapper.INSTANCE.get(context)
                                             .isNonResizeableActivity(activities.get(0)));
                                 }
-                                iconCache.getTitleAndIcon(
-                                        itemInfo, itemInfo.getMatchingLookupFlag());
+                                if (itemInfo.status == 0 && !itemInfo.isArchived()) {
+                                    availability.refreshAppearance(itemInfo, iconCache);
+                                } else {
+                                    iconCache.getTitleAndIcon(itemInfo, itemInfo.getMatchingLookupFlag());
+                                }
                                 infoUpdated = true;
                             }
                         }
 
                         int oldRuntimeFlags = itemInfo.runtimeStatusFlags;
                         itemInfo.runtimeStatusFlags = flagOp.apply(itemInfo.runtimeStatusFlags);
+                        if (isNewApkAvailable && itemInfo.itemType == Favorites.ITEM_TYPE_APPLICATION
+                                && itemInfo.status == 0 && !itemInfo.isArchived() && availability.evaluate(itemInfo)
+                                == ShortcutAvailabilityJournal.Decision.PRESERVE) {
+                            itemInfo.runtimeStatusFlags |= WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
+                        }
                         if (itemInfo.runtimeStatusFlags != oldRuntimeFlags) {
                             shortcutUpdated = true;
                         }
@@ -396,6 +407,7 @@ public class PackageUpdatedTask implements ModelUpdateTask {
                         updatedWorkspaceItems.add(itemInfo);
                     }
                     if (infoUpdated && itemInfo.id != ItemInfo.NO_ID) {
+                        availability.cacheAppearance(itemInfo, iconCache);
                         taskController.getModelWriter().updateItemInDatabase(itemInfo);
                     }
                 });

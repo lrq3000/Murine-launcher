@@ -40,6 +40,7 @@ final class AtomicAvailabilityPersistence implements ShortcutAvailabilityJournal
         try {
             stream = mFile.startWrite();
             stream.write(bytes);
+            stream.getFD().sync();
             mFile.finishWrite(stream);
         } catch (IOException | RuntimeException e) {
             mFile.failWrite(stream);

@@ -355,6 +355,7 @@ dependencies {
     ksp libs.dagger.compiler
 
     testImplementation libs.junit
+    androidTestImplementation libs.junit
     androidTestImplementation libs.mockito.core
     androidTestImplementation libs.dexmaker
     androidTestImplementation libs.dexmaker.mockito

@@ -22,6 +22,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.Collections;
 import java.util.stream.Collectors;
+import java.util.zip.CRC32;
 
 /** Durable ordinary-application availability decisions, independent of Android package queries. */
 public final class ShortcutAvailabilityJournal {
@@ -50,6 +51,17 @@ public final class ShortcutAvailabilityJournal {
     private final Map<Target, Boolean> mItems = new HashMap<>();
     private final Set<Target> mRemoved = new HashSet<>();
     private boolean mHealthy = true;
+    private int mBatchDepth;
+    private boolean mDirty;
+
+    public synchronized void beginBatch() {
+        mBatchDepth++;
+    }
+
+    public synchronized void endBatch() {
+        if (mBatchDepth == 0) throw new IllegalStateException("Unbalanced availability batch");
+        if (--mBatchDepth == 0 && mDirty) persistNow();
+    }
 
     public ShortcutAvailabilityJournal(Persistence persistence) {
         mPersistence = persistence;
@@ -106,7 +118,7 @@ public final class ShortcutAvailabilityJournal {
         state.recovering = true;
         mItems.replaceAll((target, recovering) ->
                 target.profile == profile && target.packageName.equals(pkg) || recovering);
-        persist();
+        persistNow();
     }
 
     /** The durable row snapshot precedes favorites deletion, so interruption cannot resurrect old rows after reinstall. */
@@ -123,7 +135,7 @@ public final class ShortcutAvailabilityJournal {
         state.recovering = false;
         state.pendingRemoval = false;
         // Failed atomic commits disable destructive decisions in this process, including staged tombstones.
-        return persist();
+        return persistNow();
     }
 
     public synchronized void added(long profile, String pkg) {
@@ -133,12 +145,12 @@ public final class ShortcutAvailabilityJournal {
         state.recovering = false;
         state.installationUuid = "";
         state.publicVolumeUuid = "";
-        persist();
+        persistNow();
     }
 
     public synchronized void packageRemoved(long profile, String pkg) {
         state(profile, pkg).pendingRemoval = true;
-        persist();
+        persistNow();
     }
 
     public synchronized boolean hasPendingRemoval(long profile, String pkg) {
@@ -153,6 +165,13 @@ public final class ShortcutAvailabilityJournal {
 
     public synchronized boolean isRemoved(Target target) {
         return mHealthy && mRemoved.contains(target);
+    }
+
+    /** Retire only after favorites proves a row absent; a crash between the two writes is idempotent. */
+    public synchronized void retireAbsent(String database, Set<Target> present) {
+        boolean changed = mRemoved.removeIf(target -> target.database.equals(database) && !present.contains(target));
+        changed |= mItems.keySet().removeIf(target -> target.database.equals(database) && !present.contains(target));
+        if (changed) persist();
     }
 
     public synchronized boolean hasRecovery(long profile, String pkg) {
@@ -174,8 +193,17 @@ public final class ShortcutAvailabilityJournal {
     }
 
     private boolean persist() {
+        if (mBatchDepth > 0) {
+            mDirty = true;
+            return mHealthy;
+        }
+        return persistNow();
+    }
+
+    private boolean persistNow() {
         try {
             mPersistence.write(encode());
+            mDirty = false;
             return mHealthy;
         } catch (IOException | RuntimeException e) {
             mHealthy = false;
@@ -207,12 +235,21 @@ public final class ShortcutAvailabilityJournal {
             }
             out.writeInt(mRemoved.size());
             for (Target target : mRemoved) writeTarget(out, target);
+            CRC32 checksum = new CRC32();
+            checksum.update(bytes.toByteArray());
+            out.writeLong(checksum.getValue());
         }
         return bytes.toByteArray();
     }
 
     private void decode(byte[] bytes) throws IOException {
-        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes))) {
+        if (bytes.length < 16) throw new IOException("Truncated journal");
+        CRC32 checksum = new CRC32();
+        checksum.update(bytes, 0, bytes.length - Long.BYTES);
+        try (DataInputStream trailer = new DataInputStream(new ByteArrayInputStream(bytes, bytes.length - Long.BYTES, Long.BYTES))) {
+            if (trailer.readLong() != checksum.getValue()) throw new IOException("Corrupt journal checksum");
+        }
+        try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes, 0, bytes.length - Long.BYTES))) {
             if (in.readInt() != MAGIC || in.readInt() != VERSION) throw new IOException("Unknown journal format");
             for (int count = readCount(in); count > 0; count--) {
                 PackageKey key = new PackageKey(in.readLong(), in.readUTF());

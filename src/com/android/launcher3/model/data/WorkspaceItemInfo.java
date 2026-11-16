@@ -141,7 +141,8 @@ public class WorkspaceItemInfo extends ItemInfoWithIcon {
     public void onAddToDatabase(@NonNull ContentWriter writer) {
         super.onAddToDatabase(writer);
         // Position edits while unavailable must not replace the last good cached title/icon with a failed-query fallback.
-        boolean available = (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) == 0;
+        boolean available = itemType != Favorites.ITEM_TYPE_APPLICATION || status != 0 || isArchived()
+                || (runtimeStatusFlags & FLAG_DISABLED_NOT_AVAILABLE) == 0;
         if (available || id == NO_ID) writer.put(Favorites.TITLE, title);
         writer.put(Favorites.INTENT, getIntent())
                 .put(Favorites.OPTIONS, options)

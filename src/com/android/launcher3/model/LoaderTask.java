@@ -275,7 +275,12 @@ public class LoaderTask implements Runnable {
         }
         try (LauncherModel.LoaderTransaction transaction = mModel.beginLoader(this)) {
             List<CacheableShortcutInfo> allShortcuts = new ArrayList<>();
-            loadWorkspace(allShortcuts, "", new HashMap<>(), memoryLogger, restoreEventLogger);
+            mModel.getWorkspaceAvailability().beginLoad();
+            try {
+                loadWorkspace(allShortcuts, "", new HashMap<>(), memoryLogger, restoreEventLogger);
+            } finally {
+                mModel.getWorkspaceAvailability().endLoad();
+            }
 
             // Sanitize data re-syncs widgets/shortcuts based on the workspace loaded from db.
             // sanitizeData should not be invoked if the workspace is loaded from a db different
@@ -293,7 +298,7 @@ public class LoaderTask implements Runnable {
             }
 
             verifyNotStopped();
-            mModel.getWorkspaceAvailability().reconcileBeforeBind(mBgDataModel,
+            mModel.getWorkspaceAvailability().reconcileBeforeBind(mBgDataModel, mIconCache,
                     () -> mLauncherBinder.bindWorkspace(true /* incrementBindId */, /* isBindSync= */ false));
             logASplit("bindWorkspace finished");
 
@@ -459,6 +464,7 @@ public class LoaderTask implements Runnable {
         Log.d(TAG, "loadWorkspace: loading default favorites if necessary");
         dbController.loadDefaultFavoritesIfNecessary();
         mModel.getWorkspaceAvailability().reconcilePendingRemovals();
+        mModel.getWorkspaceAvailability().retireAbsentRows();
 
         synchronized (mBgDataModel) {
             mBgDataModel.clear();
@@ -527,6 +533,12 @@ public class LoaderTask implements Runnable {
 
             processFolderItems();
             processAppPairItems();
+
+            for (ItemInfo item : mBgDataModel.itemsIdMap) {
+                if (item instanceof WorkspaceItemInfo workspace) {
+                    mModel.getWorkspaceAvailability().cacheAppearance(workspace, mIconCache);
+                }
+            }
 
             c.commitRestoredItems();
         }

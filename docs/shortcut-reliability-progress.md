@@ -1,5 +1,11 @@
 # Murine shortcut reliability ledger
 
+## Final Android runtime ownership and first run
+
+The coordinator's `eee37b482a6f61882d5c96f0ad9ce99f7e4ee082` (1.3.1 / 10301) and `dbb8587f1862273249ff7cb2e282ee00427f2f9d` (the actual missing ArrayList import build fix) are preserved. Coordinator app/test assembly plus the JVM task passed at the latter clean commit. A newly created independent LDPlayer `agent-murine-shortcuts-e773138cd7fc`, observed index5/serial `emulator-5564`, passed shared-lock RAM admission and native/ADB/API28 readiness, with local ADB enabled and root disabled. Indices0–4 and the physical WiFi target were not mutated.
+
+The full eight-test suite at dbb8587f actually ran: seven passed, one failed, zero skipped. The fixture `missingActivityRebuildsSuspensionQuietAndLockWithoutErasingOtherDisabledBits` called LoaderCursor's real icon cache on the instrumentation thread, which threw `Cache accessed on wrong thread null` before the restriction assertions. The loader/recovery section now executes on MODEL_EXECUTOR, matching its production caller without removing assertions or replacing the real cache. Native rerun remains pending at this milestone. Initial evidence/logcat: `C:/Users/33632/AppData/Local/Temp/opencode/launcher-reliability-runtime/murine-worker-final-dbb8587/`. The first ownership generation was verified stopped (both original player and VM process identities exited) before the incremental build. App/test/JVM Gradle tasks with JDK21 and max-workers1 passed in 9.3 seconds; log: `C:/Users/33632/AppData/Local/Temp/opencode/launcher-reliability-builds/murine-model-thread-fix.log`.
+
 ## Independent review correction pass (base 8a67f078)
 
 The coordinator reviewed the branch as NOT merge-ready and supplied nine Important findings. This section supersedes earlier policy/scope rulings where they conflict with the original specification. One correction pass is authorized; no extra reviewers, subagents, device actions, pushes or heavy builds are authorized to this implementer. Offline cache misses do not establish online dependency unavailability; the coordinator owns the scheduled online Android build.

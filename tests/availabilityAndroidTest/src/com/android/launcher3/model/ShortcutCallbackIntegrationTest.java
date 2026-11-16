@@ -87,39 +87,42 @@ public class ShortcutCallbackIntegrationTest {
         WorkspaceAvailability availability = new WorkspaceAvailability(context, database, mock(UserCache.class));
         LauncherAppState state = Executors.MAIN_EXECUTOR.submit(() -> LauncherAppState.getInstance(base)).get();
         InvariantDeviceProfile idp = Executors.MAIN_EXECUTOR.submit(() -> InvariantDeviceProfile.INSTANCE.get(base)).get();
-        Intent intent = new Intent().setComponent(new ComponentName("pkg", "pkg.Main"));
-        String[] columns = {Favorites._ID, Favorites.CONTAINER, Favorites.ITEM_TYPE, Favorites.SCREEN,
-                Favorites.CELLX, Favorites.CELLY, Favorites.PROFILE_ID, Favorites.RESTORED, Favorites.INTENT,
-                Favorites.APPWIDGET_ID, Favorites.APPWIDGET_PROVIDER, Favorites.SPANX, Favorites.SPANY,
-                Favorites.RANK, Favorites.OPTIONS, Favorites.APPWIDGET_SOURCE, Favorites.TITLE, Favorites.ICON};
-        Object[] values = new Object[columns.length];
-        java.util.Arrays.fill(values, 0);
-        values[0] = 42; values[1] = Favorites.CONTAINER_DESKTOP; values[6] = 301;
-        values[8] = intent.toUri(0); values[10] = null; values[16] = "Saved title"; values[17] = null;
-        MatrixCursor saved = new MatrixCursor(columns); saved.addRow(values);
-        UserManagerState userState = new UserManagerState(); userState.allUsers.put(301, Process.myUserHandle());
-        WorkspaceItemInfo item;
-        try (LoaderCursor cursor = new LoaderCursor(saved, userState, null, context, state.getIconCache(), idp,
-                state.getModel(), com.android.launcher3.util.PackageManagerHelper.INSTANCE.get(base), availability)) {
-            assertTrue(cursor.moveToNext());
-            item = cursor.loadUnavailableApplication(cursor.parseIntent());
-        }
-        // Recreated from the saved row, not a pre-populated runtime flag snapshot.
-        item.runtimeStatusFlags |= WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE | WorkspaceItemInfo.FLAG_DISABLED_BY_PUBLISHER;
-        int independent = WorkspaceItemInfo.FLAG_DISABLED_SUSPENDED | WorkspaceItemInfo.FLAG_DISABLED_QUIET_USER
-                | WorkspaceItemInfo.FLAG_DISABLED_LOCKED_USER | WorkspaceItemInfo.FLAG_DISABLED_BY_PUBLISHER;
-        assertEquals(independent, item.runtimeStatusFlags & independent);
-        LauncherActivityInfo recovered = mock(LauncherActivityInfo.class);
-        application.flags |= ApplicationInfo.FLAG_INSTALLED;
-        when(recovered.getApplicationInfo()).thenReturn(application);
-        when(recovered.getComponentName()).thenReturn(intent.getComponent());
-        when(apps.isPackageEnabled(anyString(), any())).thenReturn(true);
-        when(apps.isActivityEnabled(any(), any())).thenReturn(true);
-        when(apps.resolveActivity(any(), any())).thenReturn(recovered);
-        availability.refreshAppearance(item, state.getIconCache());
-        assertEquals(ShortcutAvailabilityJournal.Decision.AVAILABLE, availability.evaluate(item));
-        item.runtimeStatusFlags &= ~WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
-        assertEquals(independent, item.runtimeStatusFlags & independent);
+        // LoaderCursor and recovery use the real icon cache, which is confined to the model worker in production.
+        Executors.MODEL_EXECUTOR.submit(() -> {
+            Intent intent = new Intent().setComponent(new ComponentName("pkg", "pkg.Main"));
+            String[] columns = {Favorites._ID, Favorites.CONTAINER, Favorites.ITEM_TYPE, Favorites.SCREEN,
+                    Favorites.CELLX, Favorites.CELLY, Favorites.PROFILE_ID, Favorites.RESTORED, Favorites.INTENT,
+                    Favorites.APPWIDGET_ID, Favorites.APPWIDGET_PROVIDER, Favorites.SPANX, Favorites.SPANY,
+                    Favorites.RANK, Favorites.OPTIONS, Favorites.APPWIDGET_SOURCE, Favorites.TITLE, Favorites.ICON};
+            Object[] values = new Object[columns.length];
+            java.util.Arrays.fill(values, 0);
+            values[0] = 42; values[1] = Favorites.CONTAINER_DESKTOP; values[6] = 301;
+            values[8] = intent.toUri(0); values[10] = null; values[16] = "Saved title"; values[17] = null;
+            MatrixCursor saved = new MatrixCursor(columns); saved.addRow(values);
+            UserManagerState userState = new UserManagerState(); userState.allUsers.put(301, Process.myUserHandle());
+            WorkspaceItemInfo item;
+            try (LoaderCursor cursor = new LoaderCursor(saved, userState, null, context, state.getIconCache(), idp,
+                    state.getModel(), com.android.launcher3.util.PackageManagerHelper.INSTANCE.get(base), availability)) {
+                assertTrue(cursor.moveToNext());
+                item = cursor.loadUnavailableApplication(cursor.parseIntent());
+            }
+            // Recreated from the saved row, not a pre-populated runtime flag snapshot.
+            item.runtimeStatusFlags |= WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE | WorkspaceItemInfo.FLAG_DISABLED_BY_PUBLISHER;
+            int independent = WorkspaceItemInfo.FLAG_DISABLED_SUSPENDED | WorkspaceItemInfo.FLAG_DISABLED_QUIET_USER
+                    | WorkspaceItemInfo.FLAG_DISABLED_LOCKED_USER | WorkspaceItemInfo.FLAG_DISABLED_BY_PUBLISHER;
+            assertEquals(independent, item.runtimeStatusFlags & independent);
+            LauncherActivityInfo recovered = mock(LauncherActivityInfo.class);
+            application.flags |= ApplicationInfo.FLAG_INSTALLED;
+            when(recovered.getApplicationInfo()).thenReturn(application);
+            when(recovered.getComponentName()).thenReturn(intent.getComponent());
+            when(apps.isPackageEnabled(anyString(), any())).thenReturn(true);
+            when(apps.isActivityEnabled(any(), any())).thenReturn(true);
+            when(apps.resolveActivity(any(), any())).thenReturn(recovered);
+            availability.refreshAppearance(item, state.getIconCache());
+            assertEquals(ShortcutAvailabilityJournal.Decision.AVAILABLE, availability.evaluate(item));
+            item.runtimeStatusFlags &= ~WorkspaceItemInfo.FLAG_DISABLED_NOT_AVAILABLE;
+            assertEquals(independent, item.runtimeStatusFlags & independent);
+        }).get();
     }
 
     @Test
